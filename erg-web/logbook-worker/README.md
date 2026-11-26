@@ -9,13 +9,18 @@ It runs free on Cloudflare Workers. Setup takes about 15 minutes, plus Concept2'
 
 ## 1. Get Concept2 developer access
 
-1. Make an account on the **development Logbook**, https://log-dev.concept2.com. It's separate from
-   your real Logbook, and Concept2 requires every app to be tested there first.
-2. Open its developer page (https://log-dev.concept2.com/developers) and register an application.
-   Concept2 gives you a **client ID** and a **client secret**. If you don't see the option, email
-   ranking@concept2.com and ask for API access for a personal app.
-3. You'll be asked for a **redirect URI**. You don't have it until step 2 below; come back and set it to
+Concept2 issues API keys on a self-serve page. Apps that **write** results (like this one) must be
+created and tested on the **development Logbook** first, then approved by Concept2 for the real one.
+
+Do step 2 first if you can, so you already have the worker address for the redirect URI.
+
+1. Go to https://log-dev.concept2.com/developers/keys and log in. The development Logbook is separate from your
+   real Logbook, so you may need to create an account there (the same email is fine).
+2. Create a new application. When asked for the redirect (callback) URI, enter
    `https://<your-worker-address>/callback`.
+3. Concept2 shows a **client ID** and **client secret**. Keep the secret private.
+
+API documentation: https://log.concept2.com/developers/documentation/
 
 ## 2. Create the server on Cloudflare (no command line needed)
 
@@ -34,7 +39,8 @@ It runs free on Cloudflare Workers. Setup takes about 15 minutes, plus Concept2'
    | `APP_URL` | Text | `https://dnelken.github.io/peloton-to-garmin/erg-web/` |
 
 5. Open the worker's address in a browser. It should say *"Erg Trainer Logbook sync server is running."*
-6. Back in Concept2's developer page, set the redirect URI to `https://<your-worker-address>/callback`.
+6. If you created the Concept2 application before the worker, make sure its redirect URI is
+   `https://<your-worker-address>/callback`.
 
 Prefer the command line? Fill in `C2_CLIENT_ID` in [`wrangler.toml`](wrangler.toml), then:
 
@@ -58,7 +64,7 @@ npx wrangler deploy
 ## 4. Switch to your real Logbook
 
 Once it works on the development Logbook, email ranking@concept2.com to ask for live access for
-your app. When approved:
+your app (the live key page is https://log.concept2.com/developers/keys). When approved:
 
 1. Change `C2_BASE_URL` to `https://log.concept2.com` (and the client ID/secret if Concept2 gives you new ones).
 2. In the app, tap **Disconnect Logbook**, then **Connect Logbook** again to sign in to the real Logbook.
