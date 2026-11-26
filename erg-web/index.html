@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1720">
+  <title>Erg Trainer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Erg Trainer</h1>
+    <div class="chips">
+      <span class="chip" id="chip-erg" data-on="false">Erg: none</span>
+      <span class="chip" id="chip-hr" data-on="false">HR: none</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- ============ SETUP ============ -->
+    <section id="view-setup" class="view">
+      <p class="notice" id="bt-warning" hidden></p>
+
+      <div class="card">
+        <h2><span class="step">1</span> Connect</h2>
+        <div class="button-grid">
+          <button class="btn" data-connect="pm5">Concept2 PM5</button>
+          <button class="btn" data-connect="ftms">Other erg or bike (FTMS)</button>
+          <button class="btn" data-connect="hr">Heart rate strap</button>
+          <button class="btn btn-ghost" data-connect="sim">Simulator</button>
+        </div>
+        <label class="field">
+          <span>Machine</span>
+          <select id="machine"></select>
+        </label>
+        <p class="live" id="live-preview">Not connected.</p>
+      </div>
+
+      <div class="card">
+        <h2><span class="step">2</span> Choose a workout</h2>
+        <div class="presets" id="presets"></div>
+
+        <details class="custom" id="custom">
+          <summary>Build intervals</summary>
+          <form id="custom-form" class="custom-grid">
+            <label class="field"><span>Reps</span><input name="reps" type="number" min="1" max="50" value="5" required></label>
+            <label class="field"><span>Work by</span>
+              <select name="kind"><option value="distance">Distance</option><option value="time">Time</option></select>
+            </label>
+            <label class="field"><span id="work-label">Distance (m)</span><input name="work" value="500" required></label>
+            <label class="field"><span>Rest (m:ss)</span><input name="rest" value="1:00" placeholder="0 for none"></label>
+            <label class="field"><span id="target-label">Target pace /500m (optional)</span><input name="target" placeholder="e.g. 1:55"></label>
+            <button class="btn" type="submit">Use this workout</button>
+            <p class="form-error" id="custom-error" role="alert"></p>
+          </form>
+        </details>
+      </div>
+
+      <div class="card">
+        <h2><span class="step">3</span> Go</h2>
+        <p class="selected">Selected: <strong id="selected-name"></strong></p>
+        <button class="btn btn-primary btn-big" id="start" disabled>Connect an erg to start</button>
+      </div>
+
+      <div class="card">
+        <h2>Settings</h2>
+        <label class="field">
+          <span>FIT file device</span>
+          <select id="fit-device"></select>
+        </label>
+        <p class="hint">Garmin Connect only calculates Training Effect for files that come from a Garmin device.</p>
+      </div>
+
+      <div class="card" id="history-card" hidden>
+        <h2>Recent workouts</h2>
+        <ul class="history" id="history"></ul>
+      </div>
+    </section>
+
+    <!-- ============ WORKOUT ============ -->
+    <section id="view-workout" class="view" hidden>
+      <div class="seg-header">
+        <span class="seg-label" id="w-seg-label"></span>
+        <span class="seg-next" id="w-next"></span>
+      </div>
+      <div class="hero" id="w-hero-wrap">
+        <div class="hero-value" id="w-hero">--</div>
+        <div class="hero-caption" id="w-hero-caption"></div>
+        <div class="progress"><div class="progress-bar" id="w-progress"></div></div>
+      </div>
+
+      <div class="target" id="w-target" hidden></div>
+
+      <div class="metrics">
+        <div class="metric metric-lg"><span class="m-label" id="w-pace-label">Pace /500m</span><span class="m-value" id="w-pace">--:--</span></div>
+        <div class="metric metric-lg"><span class="m-label">Split avg</span><span class="m-value" id="w-seg-pace">--:--</span></div>
+        <div class="metric"><span class="m-label" id="w-cad-label">Stroke rate</span><span class="m-value" id="w-cadence">--</span></div>
+        <div class="metric"><span class="m-label">Watts</span><span class="m-value" id="w-power">--</span></div>
+        <div class="metric"><span class="m-label">Heart rate</span><span class="m-value" id="w-hr">--</span></div>
+        <div class="metric"><span class="m-label">Calories</span><span class="m-value" id="w-cal">0</span></div>
+        <div class="metric"><span class="m-label">Total distance</span><span class="m-value" id="w-dist">0 m</span></div>
+        <div class="metric"><span class="m-label">Total time</span><span class="m-value" id="w-time">0:00</span></div>
+      </div>
+
+      <div class="sim-controls" id="sim-controls" hidden>
+        <span>Simulator effort</span>
+        <button class="btn btn-small" id="sim-slower" aria-label="Slower">−</button>
+        <span id="sim-effort">100%</span>
+        <button class="btn btn-small" id="sim-faster" aria-label="Faster">+</button>
+      </div>
+
+      <div class="workout-actions">
+        <button class="btn" id="start-now">Start now</button>
+        <button class="btn btn-danger" id="end">End workout</button>
+      </div>
+    </section>
+
+    <!-- ============ SUMMARY ============ -->
+    <section id="view-summary" class="view" hidden>
+      <div class="card">
+        <h2 id="s-title">Workout complete</h2>
+        <p class="hint" id="s-date"></p>
+        <div class="summary-stats" id="s-stats"></div>
+      </div>
+      <div class="card">
+        <h2>Splits</h2>
+        <div class="table-wrap">
+          <table class="laps">
+            <thead><tr><th>#</th><th>Time</th><th>Dist</th><th id="s-pace-head">/500m</th><th>W</th><th id="s-cad-head">SPM</th><th>HR</th></tr></thead>
+            <tbody id="s-laps"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Save</h2>
+        <div class="button-grid">
+          <button class="btn btn-primary" id="dl-fit">Download FIT</button>
+          <button class="btn" id="dl-csv">Download splits CSV</button>
+        </div>
+        <p class="hint">Upload the FIT file to Garmin Connect (Import Data), Strava (Upload Activity), TrainingPeaks or intervals.icu.</p>
+        <button class="btn btn-ghost btn-big" id="again">New workout</button>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
