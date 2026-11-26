@@ -1,0 +1,16 @@
+name = "erg-trainer-logbook"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+# Concept2 requires apps to be built and tested against the development Logbook first.
+# Switch to https://log.concept2.com once Concept2 approves live access.
+C2_BASE_URL = "https://log-dev.concept2.com"
+# Where the app is hosted (the page Concept2 sign-in returns to).
+APP_URL = "https://dnelken.github.io/peloton-to-garmin/erg-web/"
+# Public client ID from your Concept2 developer account.
+C2_CLIENT_ID = "REPLACE_WITH_YOUR_CLIENT_ID"
+
+# Secrets are NOT stored here. Set them with:
+#   npx wrangler secret put C2_CLIENT_SECRET
+#   npx wrangler secret put STATE_SECRET

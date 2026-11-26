@@ -96,6 +96,23 @@
         <p class="hint">Garmin Connect only calculates Training Effect for files that come from a Garmin device.</p>
       </div>
 
+      <div class="card">
+        <h2>Concept2 Logbook</h2>
+        <p class="hint lb-status" id="lb-status">Not connected.</p>
+        <label class="field">
+          <span>Sync server address</span>
+          <input id="lb-server" type="url" inputmode="url" placeholder="https://erg-trainer-logbook.you.workers.dev" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="lb-grid">
+          <label class="field">
+            <span>Weight class (RowErg)</span>
+            <select id="lb-weight"><option value="H">Heavyweight</option><option value="L">Lightweight</option></select>
+          </label>
+          <label class="check"><input type="checkbox" id="lb-auto"><span>Send each workout automatically</span></label>
+        </div>
+        <button class="btn" id="lb-connect">Connect Logbook</button>
+      </div>
+
       <div class="card" id="history-card" hidden>
         <h2>Recent workouts</h2>
         <ul class="history" id="history"></ul>
@@ -161,7 +178,9 @@
         <div class="button-grid">
           <button class="btn btn-primary" id="dl-fit">Download FIT</button>
           <button class="btn" id="dl-csv">Download splits CSV</button>
+          <button class="btn" id="lb-send" hidden>Send to Concept2 Logbook</button>
         </div>
+        <p class="push-status" id="lb-send-status" role="status"></p>
         <p class="hint">Upload the FIT file to Garmin Connect (Import Data), Strava (Upload Activity), TrainingPeaks or intervals.icu.</p>
         <button class="btn btn-ghost btn-big" id="again">New workout</button>
       </div>

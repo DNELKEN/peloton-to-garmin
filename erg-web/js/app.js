@@ -4,6 +4,7 @@ import { HeartRateDevice } from './hr.js';
 import { Simulator } from './simulator.js';
 import { encodeFit, lapsToCsv, FIT_DEVICES } from './fit.js';
 import { PLANS, planDays, planWorkout, nextDay, recordPlanResult } from './plans.js';
+import { LogbookClient, LOGBOOK_TYPES, buildLogbookResult } from './logbook.js';
 import {
   MACHINES, PRESETS, WorkoutEngine, buildIntervals, formatDistance, formatPace,
   formatTime, machineInfo, parseDuration,
@@ -26,6 +27,7 @@ const store = {
 
 const settings = { machine: 'rower', fitDevice: 'generic', pushToPm5: true, ...store.get(SETTINGS_KEY, {}) };
 let planProgress = store.get(PLAN_KEY, {});
+const logbook = new LogbookClient();
 
 const state = {
   erg: null, // { kind, device, name }
@@ -419,6 +421,7 @@ function stopWorkoutLoop() {
 }
 
 function finishWorkout(summary) {
+  state.summaryWorkout = state.engine?.workout ?? state.workout;
   stopWorkoutLoop();
   if (!summary || !summary.laps.length) { show('setup'); return; }
   beep(990, 500);
@@ -433,10 +436,14 @@ function finishWorkout(summary) {
   renderSummary(summary);
   renderHistory();
   show('summary');
+  if (logbook.connected && logbook.config.autoSync && LOGBOOK_TYPES[summary.machine]) sendToLogbook();
 }
 
 function renderSummary(s) {
   const m = machineInfo(s.machine);
+  $('#lb-send').hidden = !logbook.connected || !LOGBOOK_TYPES[s.machine];
+  $('#lb-send').disabled = false;
+  setSendStatus('');
   $('#s-title').textContent = s.name;
   $('#s-date').textContent = `${new Date(s.startTime).toLocaleString()} · ${m.label}`;
   const stats = [
@@ -496,6 +503,52 @@ function fileStem(s) {
   const pad = (x) => String(x).padStart(2, '0');
   const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
   return `${stamp}_${s.machine}_${s.name.replace(/[^\w]+/g, '-').replace(/^-|-$/g, '')}`;
+}
+
+// ---------- Concept2 Logbook ----------
+
+function setLogbookStatus(text, kind = '') {
+  const el = $('#lb-status');
+  el.textContent = text;
+  el.dataset.state = kind;
+}
+
+async function renderLogbook() {
+  $('#lb-server').value = logbook.config.serverUrl;
+  $('#lb-weight').value = logbook.config.weightClass;
+  $('#lb-auto').checked = logbook.config.autoSync;
+  $('#lb-connect').textContent = logbook.connected ? 'Disconnect Logbook' : 'Connect Logbook';
+  if (!logbook.connected) { setLogbookStatus('Not connected.'); return; }
+  setLogbookStatus('Connected.', 'ok');
+  try {
+    const u = logbook.user ?? (await logbook.me());
+    setLogbookStatus(`Connected as ${u.username || u.first_name || 'you'}.`, 'ok');
+  } catch (err) {
+    setLogbookStatus(`Connected, but the Logbook didn't answer: ${err.message}`, 'error');
+  }
+}
+
+function setSendStatus(text, kind = '') {
+  const el = $('#lb-send-status');
+  el.textContent = text;
+  el.dataset.state = kind;
+}
+
+async function sendToLogbook() {
+  const s = state.summary;
+  if (!s) return;
+  if (!logbook.connected) { setSendStatus('Connect the Logbook in Settings first.', 'error'); return; }
+  const btn = $('#lb-send');
+  btn.disabled = true;
+  setSendStatus('Sending to the Concept2 Logbook…');
+  try {
+    const result = buildLogbookResult(s, state.summaryWorkout, { weightClass: logbook.config.weightClass });
+    const r = await logbook.upload(result);
+    setSendStatus(r.duplicate ? 'Already in your Logbook.' : 'Saved to your Concept2 Logbook.', 'ok');
+  } catch (err) {
+    setSendStatus(`Not saved: ${err.message}`, 'error');
+    btn.disabled = false;
+  }
 }
 
 // ---------- custom workout form ----------
@@ -585,6 +638,27 @@ function init() {
     const s = state.summary;
     if (s) download(lapsToCsv(s), `${fileStem(s)}_splits.csv`, 'text/csv');
   });
+  $('#lb-send').addEventListener('click', sendToLogbook);
+  $('#lb-server').addEventListener('change', (e) => logbook.saveConfig({ serverUrl: e.target.value.trim() }));
+  $('#lb-weight').addEventListener('change', (e) => logbook.saveConfig({ weightClass: e.target.value }));
+  $('#lb-auto').addEventListener('change', (e) => logbook.saveConfig({ autoSync: e.target.checked }));
+  $('#lb-connect').addEventListener('click', () => {
+    if (logbook.connected) {
+      logbook.disconnect();
+      renderLogbook();
+      return;
+    }
+    logbook.saveConfig({ serverUrl: $('#lb-server').value.trim() });
+    try {
+      logbook.login();
+    } catch (err) {
+      setLogbookStatus(err.message, 'error');
+    }
+  });
+  const redirect = logbook.handleRedirect();
+  renderLogbook().then(() => { if (redirect?.error) setLogbookStatus(redirect.error, 'error'); });
+  if (redirect) $('#lb-status').scrollIntoView({ block: 'center' });
+
   $('#again').addEventListener('click', () => {
     if (state.workout.plan) selectWorkout(planWorkout(plan, nextDay(plan, planProgress), planProgress));
     setPushStatus('');

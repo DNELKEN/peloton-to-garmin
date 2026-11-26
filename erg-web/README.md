@@ -18,6 +18,9 @@ No build step and no dependencies: plain HTML, CSS and JavaScript modules.
 - **Loads workouts onto the PM5**: with a PM5 connected, *Load onto PM5 and start* programs the
   workout on the monitor (single distance/time pieces with splits, or variable intervals with
   exact rests and target pace), so the PM5 runs and stores it like any workout you set up by hand.
+- **Concept2 Logbook sync**: connect once, and finished workouts upload to your Logbook
+  automatically (or with one tap). Needs a small free sync server; see
+  [`logbook-worker/README.md`](logbook-worker/README.md).
 - **The Pete Plan**: the three-week cycle from Pete's published plan, with next-session tracking,
   configurable steady/hard distances, and Pete's pacing rule built in: your average on a session
   becomes the target for every rep but the last next time.
@@ -72,6 +75,8 @@ encoder's header and CRCs.
 | `js/csafe.js` | CSAFE framing (byte stuffing, checksum, reply status) |
 | `js/pm5-workouts.js` | Converts a workout into PM5 configuration commands |
 | `js/plans.js` | The Pete Plan and plan progress |
+| `js/logbook.js` | Converts workouts to Logbook results; Logbook sign-in and upload |
+| `logbook-worker/` | Sign-in/relay server for the Logbook (Cloudflare Worker) |
 | `js/ftms.js` | Fitness Machine Service rower and indoor bike data |
 | `js/hr.js` | Heart rate strap |
 | `js/simulator.js` | Fake erg for testing |
@@ -89,4 +94,4 @@ encoder's header and CRCs.
 - PM5 command sequences follow those used by the open-source ErgometerJS library over Web
   Bluetooth; each message fits in one 20-byte Bluetooth packet.
 - Plan progress, targets and history are stored in this browser only.
-- Not yet: Concept2 Logbook sync, the 24-week Beginner Pete Plan, force curves.
+- Not yet: the 24-week Beginner Pete Plan, force curves.
