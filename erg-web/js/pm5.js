@@ -1,4 +1,6 @@
 import { u8, u16, u24 } from './bytes.js';
+import { buildFrame, parseFrame, FRAME_STOP } from './csafe.js';
+import { workoutToFrames, terminateFrame } from './pm5-workouts.js';
 
 // Concept2 PM5 Bluetooth Smart interface. All UUIDs share one base:
 // CE06xxxx-43E5-11E4-916C-0800200C9A66
@@ -8,6 +10,8 @@ export const PM5_UUIDS = {
   discoveryService: pmUuid('0000'),
   infoService: pmUuid('0010'),
   controlService: pmUuid('0020'),
+  controlTransmit: pmUuid('0021'), // app -> PM
+  controlReceive: pmUuid('0022'), // PM -> app
   rowingService: pmUuid('0030'),
   generalStatus: pmUuid('0031'),
   additionalStatus: pmUuid('0032'),
@@ -92,7 +96,10 @@ export function machineFromName(name = '') {
 }
 
 const handlers = {
-  [PM5_UUIDS.generalStatus]: (dv) => ({ distance: parseGeneralStatus(dv).distance }),
+  [PM5_UUIDS.generalStatus]: (dv) => {
+    const s = parseGeneralStatus(dv);
+    return { distance: s.distance, pmWorkoutType: s.workoutType, pmWorkoutState: s.workoutState };
+  },
   [PM5_UUIDS.additionalStatus]: (dv) => {
     const s = parseAdditionalStatus(dv);
     return { speed: s.speed, cadence: s.strokeRate, heartRate: s.heartRate };
@@ -122,6 +129,16 @@ export class PM5Device {
       await rate.writeValue(Uint8Array.of(1));
     } catch { /* keep default rate */ }
 
+    try {
+      const control = await server.getPrimaryService(PM5_UUIDS.controlService);
+      this.tx = await control.getCharacteristic(PM5_UUIDS.controlTransmit);
+      const rx = await control.getCharacteristic(PM5_UUIDS.controlReceive);
+      rx.addEventListener('characteristicvaluechanged', (e) => this.onControlData(e.target.value));
+      await rx.startNotifications();
+    } catch {
+      this.tx = null; // monitor still streams data; workouts just can't be loaded
+    }
+
     for (const [uuid, parse] of Object.entries(handlers)) {
       const ch = await rowing.getCharacteristic(uuid);
       ch.addEventListener('characteristicvaluechanged', (e) => this.handle(uuid, parse, e.target.value));
@@ -137,9 +154,81 @@ export class PM5Device {
     } catch {
       return; // short or malformed packet
     }
+    if (uuid === PM5_UUIDS.generalStatus) {
+      this.status = { workoutType: update.pmWorkoutType, workoutState: update.pmWorkoutState, at: Date.now() };
+      delete update.pmWorkoutType;
+      delete update.pmWorkoutState;
+    }
     if (uuid === PM5_UUIDS.additionalStrokeData) this.gotStrokePower = true;
     if (uuid === PM5_UUIDS.additionalStatus && !this.gotStrokePower) update.power = Math.round(wattsFromSpeed(update.speed));
     this.onData(update);
+  }
+
+  get canProgram() {
+    return !!this.tx;
+  }
+
+  // ---- CSAFE control channel ----
+
+  onControlData(dv) {
+    const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+    this.rxBuffer = [...(this.rxBuffer ?? []), ...bytes];
+    const end = this.rxBuffer.indexOf(FRAME_STOP);
+    if (end < 0) return;
+    const frame = this.rxBuffer.slice(0, end + 1);
+    this.rxBuffer = this.rxBuffer.slice(end + 1);
+    const waiter = this.waiter;
+    this.waiter = null;
+    try {
+      waiter?.resolve(parseFrame(frame));
+    } catch (err) {
+      waiter?.resolve({ previousFrame: 'unreadable', error: err.message });
+    }
+  }
+
+  // Send one CSAFE frame (in 20-byte BLE packets) and wait for the PM's reply.
+  async sendFrame(contents, timeoutMs = 2000) {
+    if (!this.tx) throw new Error('This monitor does not accept commands over Bluetooth.');
+    const frame = buildFrame(contents);
+    this.rxBuffer = [];
+    const reply = new Promise((resolve) => {
+      this.waiter = { resolve };
+      setTimeout(() => {
+        if (this.waiter?.resolve === resolve) { this.waiter = null; resolve(null); }
+      }, timeoutMs);
+    });
+    for (let i = 0; i < frame.length; i += 20) {
+      const chunk = frame.slice(i, i + 20);
+      await (this.tx.writeValueWithResponse ? this.tx.writeValueWithResponse(chunk) : this.tx.writeValue(chunk));
+    }
+    const res = await reply;
+    if (res && (res.previousFrame === 'rejected' || res.previousFrame === 'not ready')) {
+      throw new Error(`The PM5 ${res.previousFrame === 'rejected' ? 'rejected' : 'was not ready for'} the workout. Go back to the PM5 main menu and try again.`);
+    }
+    return res;
+  }
+
+  // Whether the monitor is in the middle of a workout (anything between first stroke and the end).
+  get workoutInProgress() {
+    const s = this.status?.workoutState;
+    return s != null && s >= 1 && s <= 9;
+  }
+
+  // Load a workout onto the monitor. Resolves { verified } once the PM reports the new workout type.
+  async programWorkout(workout, { terminateFirst = false, sendTargets = true } = {}) {
+    const { frames, workoutType } = workoutToFrames(workout, { sendTargets });
+    if (terminateFirst) {
+      await this.sendFrame(terminateFrame());
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    for (const f of frames) await this.sendFrame(f);
+    // The rowing service reports the active workout type about twice a second.
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      if (this.status?.workoutType === workoutType && this.status.workoutState === 0) return { verified: true };
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return { verified: false };
   }
 
   get machineGuess() {

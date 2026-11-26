@@ -3,6 +3,7 @@ import { FtmsDevice } from './ftms.js';
 import { HeartRateDevice } from './hr.js';
 import { Simulator } from './simulator.js';
 import { encodeFit, lapsToCsv, FIT_DEVICES } from './fit.js';
+import { PLANS, planDays, planWorkout, nextDay, recordPlanResult } from './plans.js';
 import {
   MACHINES, PRESETS, WorkoutEngine, buildIntervals, formatDistance, formatPace,
   formatTime, machineInfo, parseDuration,
@@ -11,6 +12,8 @@ import {
 const $ = (sel) => document.querySelector(sel);
 const HISTORY_KEY = 'erg-trainer.history';
 const SETTINGS_KEY = 'erg-trainer.settings';
+const PLAN_KEY = 'erg-trainer.plan.pete';
+const plan = PLANS.pete;
 
 const store = {
   get(key, fallback) {
@@ -21,7 +24,8 @@ const store = {
   },
 };
 
-const settings = { machine: 'rower', fitDevice: 'generic', ...store.get(SETTINGS_KEY, {}) };
+const settings = { machine: 'rower', fitDevice: 'generic', pushToPm5: true, ...store.get(SETTINGS_KEY, {}) };
+let planProgress = store.get(PLAN_KEY, {});
 
 const state = {
   erg: null, // { kind, device, name }
@@ -72,9 +76,12 @@ function updateConnectionUi() {
     const connected = kind === 'hr' ? !!state.hr : state.erg?.kind === kind;
     btn.dataset.connected = String(connected);
   }
+  const canPush = state.erg?.kind === 'pm5' && state.erg.device.canProgram;
+  $('#push-row').hidden = !canPush;
+  $('#push-pm5').checked = settings.pushToPm5;
   const start = $('#start');
   start.disabled = !state.erg;
-  start.textContent = state.erg ? 'Start workout' : 'Connect an erg to start';
+  start.textContent = !state.erg ? 'Connect an erg to start' : canPush && settings.pushToPm5 ? 'Load onto PM5 and start' : 'Start workout';
   renderLivePreview();
 }
 
@@ -99,7 +106,7 @@ function renderPresets() {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'preset';
-    b.setAttribute('aria-pressed', String(p === state.workout));
+    b.setAttribute('aria-pressed', String(p.name === state.workout.name && !state.workout.plan));
     b.innerHTML = `<strong></strong><small></small>`;
     b.querySelector('strong').textContent = p.name;
     b.querySelector('small').textContent = segmentCount(p);
@@ -116,7 +123,87 @@ function segmentCount(w) {
 
 function selectWorkout(w) {
   state.workout = w;
+  setPushStatus('');
   renderPresets();
+  renderPlan();
+}
+
+// ---------- plan ----------
+
+function savePlan() {
+  store.set(PLAN_KEY, planProgress);
+}
+
+function renderPlan() {
+  const days = planDays(plan);
+  const next = nextDay(plan, planProgress);
+  const cycle = planProgress.cycle ?? 1;
+  const doneThisCycle = new Map();
+  for (const h of planProgress.history ?? []) {
+    if ((h.cycle ?? 1) === cycle && !doneThisCycle.has(h.dayIndex)) doneThisCycle.set(h.dayIndex, h);
+  }
+  const nextW = planWorkout(plan, next, planProgress);
+  $('#plan-next').innerHTML = '';
+  const strong = document.createElement('strong');
+  strong.textContent = `Next up: Week ${days[next].week}, Day ${days[next].day} · ${nextW.shortName}`;
+  $('#plan-next').append(`Cycle ${cycle} · `, strong);
+
+  const weeks = plan.weeks.map((w, wi) => {
+    const section = document.createElement('div');
+    section.className = 'plan-week';
+    const h = document.createElement('h3');
+    h.textContent = `Week ${wi + 1}`;
+    section.append(h);
+    for (const d of days.filter((x) => x.week === wi + 1)) {
+      const wk = planWorkout(plan, d.index, planProgress);
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'plan-day';
+      b.innerHTML = '<span class="d-num"></span><span class="d-name"></span><span class="d-meta"></span>';
+      b.querySelector('.d-num').textContent = `Day ${d.day}`;
+      b.querySelector('.d-name').textContent = wk ? wk.shortName : 'Rest day';
+      const done = doneThisCycle.get(d.index);
+      const target = planProgress.targets?.[d.session.id];
+      b.querySelector('.d-meta').textContent = done
+        ? `✓ ${done.pace ? formatPace(done.pace) : 'done'}`
+        : target ? `target ${formatPace(target)}` : '';
+      b.dataset.done = String(!!done);
+      b.dataset.next = String(d.index === next);
+      b.setAttribute('aria-pressed', String(state.workout.plan?.dayIndex === d.index));
+      if (!wk) b.disabled = true;
+      else b.addEventListener('click', () => selectWorkout(planWorkout(plan, d.index, planProgress)));
+      section.append(b);
+    }
+    return section;
+  });
+  $('#plan-weeks').replaceChildren(...weeks);
+  const opts = { ...plan.defaults, ...planProgress.options };
+  $('#plan-steady').value = opts.steadyDistance;
+  $('#plan-hard').value = opts.hardDistance;
+}
+
+function setPlanOption(key, value) {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n) || n < 500 || n > 100000) return;
+  planProgress = { ...planProgress, options: { ...planProgress.options, [key]: n } };
+  savePlan();
+  const sel = state.workout.plan;
+  if (sel && (sel.kind === 'steady' || sel.kind === 'hard')) state.workout = planWorkout(plan, sel.dayIndex, planProgress);
+  renderPresets();
+  renderPlan();
+}
+
+function showTab(tab) {
+  for (const t of document.querySelectorAll('[data-tab]')) t.setAttribute('aria-selected', String(t.dataset.tab === tab));
+  for (const p of document.querySelectorAll('[data-panel]')) p.hidden = p.dataset.panel !== tab;
+  settings.tab = tab;
+  store.set(SETTINGS_KEY, settings);
+}
+
+function setPushStatus(text, kind = '') {
+  const el = $('#push-status');
+  el.textContent = text;
+  el.dataset.state = kind;
 }
 
 function renderMachineSelect() {
@@ -200,8 +287,39 @@ function setMachine(machine) {
 
 // ---------- workout ----------
 
+async function loadOntoPm5() {
+  const pm = state.erg.device;
+  let terminateFirst = false;
+  if (pm.workoutInProgress) {
+    if (!confirm('The PM5 has a workout in progress. End it and load this one?')) return false;
+    terminateFirst = true;
+  }
+  const start = $('#start');
+  start.disabled = true;
+  setPushStatus('Loading onto the PM5…');
+  try {
+    const { verified } = await pm.programWorkout(state.workout, {
+      terminateFirst,
+      sendTargets: machineInfo(settings.machine).paceUnit === 500,
+    });
+    setPushStatus(
+      verified ? 'Loaded. The PM5 is ready: start rowing.' : 'Sent to the PM5. Check its screen shows the workout, then start rowing.',
+      'ok',
+    );
+    return true;
+  } catch (err) {
+    setPushStatus(`${err?.message ?? err} You can untick "Load this workout onto the PM5" and set it up on the monitor instead.`, 'error');
+    return false;
+  } finally {
+    start.disabled = !state.erg;
+  }
+}
+
 async function startWorkout() {
   if (!state.erg) return;
+  if (state.erg.kind === 'pm5' && state.erg.device.canProgram && settings.pushToPm5) {
+    if (!(await loadOntoPm5())) return;
+  }
   beep(660, 60); // unlocks audio on iOS-style autoplay policies
   state.lastCountdownBeep = null;
   state.engine = new WorkoutEngine(state.workout, {
@@ -307,6 +425,11 @@ function finishWorkout(summary) {
   state.summary = summary;
   const { samples, laps, ...brief } = summary;
   store.set(HISTORY_KEY, [brief, ...store.get(HISTORY_KEY, [])].slice(0, 20));
+  if (summary.plan?.planId === plan.id) {
+    planProgress = recordPlanResult(plan, planProgress, summary);
+    savePlan();
+    renderPlan();
+  }
   renderSummary(summary);
   renderHistory();
   show('summary');
@@ -409,8 +532,21 @@ function init() {
   renderMachineSelect();
   renderFitDeviceSelect();
   renderPresets();
+  renderPlan();
   renderHistory();
+  showTab(settings.tab ?? 'quick');
   updateConnectionUi();
+  $('#plan-notes').replaceChildren(...plan.notes.map((n) => Object.assign(document.createElement('li'), { textContent: n })));
+
+  for (const t of document.querySelectorAll('[data-tab]')) t.addEventListener('click', () => showTab(t.dataset.tab));
+  $('#plan-steady').addEventListener('change', (e) => setPlanOption('steadyDistance', e.target.value));
+  $('#plan-hard').addEventListener('change', (e) => setPlanOption('hardDistance', e.target.value));
+  $('#push-pm5').addEventListener('change', (e) => {
+    settings.pushToPm5 = e.target.checked;
+    store.set(SETTINGS_KEY, settings);
+    setPushStatus('');
+    updateConnectionUi();
+  });
 
   for (const btn of document.querySelectorAll('[data-connect]')) btn.addEventListener('click', () => connect(btn.dataset.connect));
   $('#machine').addEventListener('change', (e) => setMachine(e.target.value));
@@ -449,7 +585,12 @@ function init() {
     const s = state.summary;
     if (s) download(lapsToCsv(s), `${fileStem(s)}_splits.csv`, 'text/csv');
   });
-  $('#again').addEventListener('click', () => { show('setup'); updateConnectionUi(); });
+  $('#again').addEventListener('click', () => {
+    if (state.workout.plan) selectWorkout(planWorkout(plan, nextDay(plan, planProgress), planProgress));
+    setPushStatus('');
+    show('setup');
+    updateConnectionUi();
+  });
 
   document.addEventListener('visibilitychange', async () => {
     if (state.engine && document.visibilityState === 'visible' && !state.wakeLock) {

@@ -38,12 +38,32 @@
 
       <div class="card">
         <h2><span class="step">2</span> Choose a workout</h2>
-        <div class="presets" id="presets"></div>
+        <div class="tabs" role="tablist" aria-label="Workout source">
+          <button type="button" class="tab" role="tab" data-tab="quick" aria-selected="true">Quick</button>
+          <button type="button" class="tab" role="tab" data-tab="plan" aria-selected="false">Pete Plan</button>
+          <button type="button" class="tab" role="tab" data-tab="custom" aria-selected="false">Build</button>
+        </div>
 
-        <details class="custom" id="custom">
-          <summary>Build intervals</summary>
+        <div data-panel="quick" role="tabpanel">
+          <div class="presets" id="presets"></div>
+        </div>
+
+        <div data-panel="plan" role="tabpanel" hidden>
+          <p class="plan-next" id="plan-next"></p>
+          <div class="plan-weeks" id="plan-weeks"></div>
+          <div class="plan-options">
+            <label class="field"><span>Steady distance (m)</span><input id="plan-steady" type="number" min="1000" step="500" inputmode="numeric"></label>
+            <label class="field"><span>Hard distance (m)</span><input id="plan-hard" type="number" min="1000" step="500" inputmode="numeric"></label>
+          </div>
+          <details class="plan-notes">
+            <summary>How the plan works</summary>
+            <ul id="plan-notes"></ul>
+          </details>
+        </div>
+
+        <div data-panel="custom" role="tabpanel" hidden>
           <form id="custom-form" class="custom-grid">
-            <label class="field"><span>Reps</span><input name="reps" type="number" min="1" max="50" value="5" required></label>
+            <label class="field"><span>Reps</span><input name="reps" type="number" min="1" max="30" value="5" required></label>
             <label class="field"><span>Work by</span>
               <select name="kind"><option value="distance">Distance</option><option value="time">Time</option></select>
             </label>
@@ -53,12 +73,17 @@
             <button class="btn" type="submit">Use this workout</button>
             <p class="form-error" id="custom-error" role="alert"></p>
           </form>
-        </details>
+        </div>
       </div>
 
       <div class="card">
         <h2><span class="step">3</span> Go</h2>
         <p class="selected">Selected: <strong id="selected-name"></strong></p>
+        <label class="check" id="push-row" hidden>
+          <input type="checkbox" id="push-pm5" checked>
+          <span>Load this workout onto the PM5</span>
+        </label>
+        <p class="push-status" id="push-status" role="status"></p>
         <button class="btn btn-primary btn-big" id="start" disabled>Connect an erg to start</button>
       </div>
 

@@ -127,7 +127,9 @@ export class WorkoutEngine {
       const prevAt = this.lastDeviceAt ?? now;
       this.lastDeviceDistance = u.distance;
       this.lastDeviceAt = now;
-      const d = prev == null ? 0 : u.distance - prev;
+      let d = prev == null ? 0 : u.distance - prev;
+      // The PM5 restarts its distance at each interval of a programmed workout: count from zero.
+      if (d < 0 && u.distance < MAX_DISTANCE_JUMP) d = u.distance;
       if (d > 0 && d < MAX_DISTANCE_JUMP) {
         // Movement began somewhere after the previous reading; start the clock there.
         if (this.state === 'armed') this.begin(prevAt);
@@ -269,6 +271,7 @@ export class WorkoutEngine {
     const workDistance = workLaps.reduce((s, l) => s + l.distance, 0);
     return {
       name: this.workout.name,
+      plan: this.workout.plan ?? null,
       machine: this.machine,
       startTime: this.startTime,
       endTime: this.endTime,

@@ -105,3 +105,12 @@ test('bike without distance integrates speed', () => {
   }
   assert.ok(Math.abs(e.totalDistance - 100) < 1.5, `distance ${e.totalDistance}`);
 });
+
+test('PM5 per-interval distance reset keeps counting', () => {
+  const e = new WorkoutEngine(PRESETS[0]);
+  e.ingest({ distance: 0 }, 0);
+  for (let d = 4, t = 1000; d <= 500; d += 4, t += 1000) e.ingest({ distance: d }, t);
+  e.ingest({ distance: 3 }, 200000); // new interval starts from zero
+  e.ingest({ distance: 10 }, 201000);
+  assert.equal(e.totalDistance, 510);
+});
