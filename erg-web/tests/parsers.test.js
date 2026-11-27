@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { toDataView } from '../js/bytes.js';
-import { parseGeneralStatus, parseAdditionalStatus, parseStrokeData, parseAdditionalStrokeData, machineFromName, wattsFromSpeed } from '../js/pm5.js';
+import { parseGeneralStatus, parseAdditionalStatus, parseStrokeData, parseAdditionalStrokeData, machineFromName, wattsFromSpeed, pmWorkoutEnded, PM5Device, PM5_UUIDS, PM5_HANDLERS } from '../js/pm5.js';
 import { parseRowerData, parseIndoorBikeData } from '../js/ftms.js';
 import { parseHeartRate } from '../js/hr.js';
 
@@ -13,6 +13,29 @@ test('PM5 general status', () => {
   assert.equal(s.elapsed, 123.45);
   assert.equal(s.distance, 1500.3);
   assert.equal(s.dragFactor, 120);
+});
+
+test('PM5 workout end detection: finished or Menu pressed mid-workout', () => {
+  assert.equal(pmWorkoutEnded(1, 11), true); // rowing -> terminated (Menu)
+  assert.equal(pmWorkoutEnded(5, 0), true); // interval work -> waiting (reset)
+  assert.equal(pmWorkoutEnded(1, 10), true); // rowing -> workout end
+  assert.equal(pmWorkoutEnded(3, 5), false); // rest -> work is still the same workout
+  assert.equal(pmWorkoutEnded(0, 1), false); // starting
+  assert.equal(pmWorkoutEnded(undefined, 11), false); // first reading after connecting
+  assert.equal(pmWorkoutEnded(12, 0), false); // already ended
+});
+
+test('PM5Device reports the end of a workout once, after the final data', () => {
+  const events = [];
+  const pm = new PM5Device({ onData: (u) => events.push(['data', u.distance]), onWorkoutEnd: (s) => events.push(['end', s]) });
+  const status = (distance, workoutState) => toDataView([...le(0, 3), ...le(distance * 10, 3), 1, 0, workoutState, 1, 2, ...le(0, 3), ...le(0, 3), 0x80, 120]);
+  const feed = (d, st) => pm.handle(PM5_UUIDS.generalStatus, PM5_HANDLERS[PM5_UUIDS.generalStatus], status(d, st));
+  feed(0, 0);
+  feed(100, 1);
+  feed(812, 1);
+  feed(812, 11); // Menu pressed
+  feed(0, 0);
+  assert.deepEqual(events, [['data', 0], ['data', 100], ['data', 812], ['data', 812], ['end', 11], ['data', 0]]);
 });
 
 test('PM5 additional status: speed, stroke rate, HR, pace', () => {

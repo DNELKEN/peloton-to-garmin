@@ -77,7 +77,7 @@ your app (the live key page is https://log.concept2.com/developers/keys). When a
 | Single distance (e.g. 2,000m) | FixedDistanceSplits, same splits the PM5 uses |
 | Single time (e.g. 30:00) | FixedTimeSplits |
 | Intervals and the Pete Plan | VariableInterval, with rest time/distance and target pace |
-| Anything ended early | JustRow |
+| Anything ended early, in the app or with the PM5's Menu button | JustRow, with everything rowed up to that point |
 
 Each result includes average stroke rate, stroke count, calories and heart rate (when a strap was
 connected). Only RowErg, SkiErg and BikeErg workouts can be sent. If you upload the same workout

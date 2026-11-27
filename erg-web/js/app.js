@@ -248,6 +248,21 @@ function onErgData(update) {
   if (!state.engine) renderLivePreview();
 }
 
+// The PM5 left its workout: either it finished, or the rower pressed Menu to end it early.
+// A finished workout normally completes in the app at the same moment; give the last readings a
+// moment to arrive, then end whatever is still running so the work so far is saved (and synced).
+const PM_END_GRACE_MS = 2000;
+function onPmWorkoutEnd() {
+  const engine = state.engine;
+  if (!engine) return;
+  const endedAt = Date.now();
+  setTimeout(() => {
+    if (state.engine !== engine || engine.state !== 'running') return;
+    const summary = engine.end(endedAt);
+    if (!summary) finishWorkout(null);
+  }, PM_END_GRACE_MS);
+}
+
 function onHrData(update) {
   Object.assign(state.live, update);
   state.engine?.ingest(update, Date.now());
@@ -264,7 +279,7 @@ async function connect(kind) {
       state.erg?.device.disconnect();
       state.erg = null;
       state.live = {};
-      const handlers = { onData: onErgData, onDisconnect: () => { state.erg = null; updateConnectionUi(); } };
+      const handlers = { onData: onErgData, onDisconnect: () => { state.erg = null; updateConnectionUi(); }, onWorkoutEnd: onPmWorkoutEnd };
       const device = kind === 'pm5' ? new PM5Device(handlers)
         : kind === 'ftms' ? new FtmsDevice(handlers)
         : new Simulator({ machine: settings.machine, onData: onErgData });

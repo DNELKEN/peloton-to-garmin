@@ -84,6 +84,14 @@ export function parseAdditionalStrokeData(dv) {
   };
 }
 
+// PM5 workout states (General Status byte 8). 1-9 are the "in a workout" states: rowing, and
+// the countdown, rest and work phases of intervals. 10 = workout end, 11 = terminated (Menu
+// pressed mid-workout), 12 = logged, 13 = rearm, 0 = waiting to begin.
+export const isActiveWorkoutState = (s) => s != null && s >= 1 && s <= 9;
+
+// True when the monitor has just left a workout, whether it finished or the rower pressed Menu.
+export const pmWorkoutEnded = (prev, next) => isActiveWorkoutState(prev) && !isActiveWorkoutState(next);
+
 // Concept2 pace-to-watts formula, used when the PM has not sent stroke power yet.
 export const wattsFromSpeed = (speed) => (speed > 0 ? 2.8 * speed ** 3 : 0);
 
@@ -95,7 +103,7 @@ export function machineFromName(name = '') {
   return 'rower';
 }
 
-const handlers = {
+export const PM5_HANDLERS = {
   [PM5_UUIDS.generalStatus]: (dv) => {
     const s = parseGeneralStatus(dv);
     return { distance: s.distance, pmWorkoutType: s.workoutType, pmWorkoutState: s.workoutState };
@@ -108,9 +116,10 @@ const handlers = {
 };
 
 export class PM5Device {
-  constructor({ onData, onDisconnect }) {
+  constructor({ onData, onDisconnect, onWorkoutEnd }) {
     this.onData = onData;
     this.onDisconnect = onDisconnect;
+    this.onWorkoutEnd = onWorkoutEnd;
     this.gotStrokePower = false;
   }
 
@@ -139,7 +148,7 @@ export class PM5Device {
       this.tx = null; // monitor still streams data; workouts just can't be loaded
     }
 
-    for (const [uuid, parse] of Object.entries(handlers)) {
+    for (const [uuid, parse] of Object.entries(PM5_HANDLERS)) {
       const ch = await rowing.getCharacteristic(uuid);
       ch.addEventListener('characteristicvaluechanged', (e) => this.handle(uuid, parse, e.target.value));
       await ch.startNotifications();
@@ -154,7 +163,9 @@ export class PM5Device {
     } catch {
       return; // short or malformed packet
     }
+    let ended = false;
     if (uuid === PM5_UUIDS.generalStatus) {
+      ended = pmWorkoutEnded(this.status?.workoutState, update.pmWorkoutState);
       this.status = { workoutType: update.pmWorkoutType, workoutState: update.pmWorkoutState, at: Date.now() };
       delete update.pmWorkoutType;
       delete update.pmWorkoutState;
@@ -162,6 +173,7 @@ export class PM5Device {
     if (uuid === PM5_UUIDS.additionalStrokeData) this.gotStrokePower = true;
     if (uuid === PM5_UUIDS.additionalStatus && !this.gotStrokePower) update.power = Math.round(wattsFromSpeed(update.speed));
     this.onData(update);
+    if (ended) this.onWorkoutEnd?.(this.status.workoutState);
   }
 
   get canProgram() {
@@ -210,8 +222,7 @@ export class PM5Device {
 
   // Whether the monitor is in the middle of a workout (anything between first stroke and the end).
   get workoutInProgress() {
-    const s = this.status?.workoutState;
-    return s != null && s >= 1 && s <= 9;
+    return isActiveWorkoutState(this.status?.workoutState);
   }
 
   // Load a workout onto the monitor. Resolves { verified } once the PM reports the new workout type.
