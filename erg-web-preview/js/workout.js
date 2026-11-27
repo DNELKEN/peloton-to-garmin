@@ -123,6 +123,11 @@ export class WorkoutEngine {
   }
 
   // Feed one normalized update from a device: any of distance, speed, cadence, power, heartRate.
+  // Forget a machine's last distance (after it reconnects): its next reading is a fresh start.
+  resetSource(source) {
+    delete this.lastDevice[source ?? '_'];
+  }
+
   // In a multi-erg workout, tag each update with `source` (the machine it came from).
   ingest(u, now) {
     if (this.state === 'finished') return;

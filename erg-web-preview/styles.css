@@ -209,6 +209,10 @@ main { max-width: 760px; margin: 0 auto; padding: 16px; }
 .multi-machine[data-connected="true"] .mm-status { color: var(--good); }
 .multi-machine .mm-buttons { display: flex; gap: 6px; }
 .hero[data-type="transition"] { border-color: var(--rest); }
+.w-machines { margin: 0 0 8px; }
+.w-machines .chip[aria-current="true"] { outline: 2px solid var(--accent); outline-offset: 1px; }
+.w-machines .chip[data-state="waiting"] { color: var(--bad); }
+.multi-machine[data-connected="waiting"] .mm-status { color: var(--bad); }
 
 /* ---------- workout ---------- */
 .seg-header { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: baseline; margin-bottom: 8px; }

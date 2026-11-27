@@ -43,6 +43,10 @@ No build step and no dependencies: plain HTML, CSS and JavaScript modules.
   are recorded. Each PM5 gets its next leg loaded as soon as its current one ends. Afterwards
   the Logbook gets one result per machine (legs on the same machine become intervals, with the
   time away as rest), and the FIT file is a multisport activity with transitions.
+  Idle PM5s go to sleep after a while. The app checks in with each connected PM5 every minute
+  (which may keep it awake), and if one drops it keeps reconnecting on its own; a sleeping PM5
+  wakes when you start using it, so it rejoins as you start its leg. Chips on the workout
+  screen show each machine's connection.
 - **After**: splits table, FIT download (records, laps with work/rest intensity, session),
   splits CSV, and a short local history.
 
