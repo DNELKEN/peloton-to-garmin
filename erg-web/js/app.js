@@ -5,6 +5,7 @@ import { Simulator } from './simulator.js';
 import { encodeFit, lapsToCsv, FIT_DEVICES } from './fit.js';
 import { PLANS, planDays, planWorkout, nextDay, recordPlanResult } from './plans.js';
 import { LogbookClient, LOGBOOK_TYPES, buildLogbookResult } from './logbook.js';
+import { suggestTargets, applyTargets } from './insights.js';
 import { StrokeTracker } from './stroke.js';
 import { MULTI_MACHINES, SHORT_NAMES, buildCircuit, buildErgathlon, machinesIn, nextLegOn, splitByMachine } from './multi.js';
 import {
@@ -16,6 +17,8 @@ const $ = (sel) => document.querySelector(sel);
 const HISTORY_KEY = 'erg-trainer.history';
 const SETTINGS_KEY = 'erg-trainer.settings';
 const PLAN_KEY = 'erg-trainer.plan.pete';
+const LB_HISTORY_KEY = 'erg-trainer.logbook.history';
+const LB_HISTORY_MAX_AGE_MS = 6 * 3600 * 1000;
 const plan = PLANS.pete;
 
 const store = {
@@ -148,6 +151,7 @@ function renderPresets() {
     return b;
   }));
   $('#selected-name').textContent = state.workout.name;
+  renderSuggestion();
 }
 
 function segmentCount(w) {
@@ -190,6 +194,56 @@ function renderMultiMachines() {
     }
     return row;
   }));
+}
+
+// ---------- suggested targets (from Logbook history) ----------
+
+function logbookHistory() {
+  const h = store.get(LB_HISTORY_KEY, null);
+  return h && h.type === LOGBOOK_TYPES[settings.machine] ? h : null;
+}
+
+function renderSuggestion() {
+  const box = $('#suggest');
+  const h = logbookHistory();
+  const m = machineInfo(settings.machine);
+  const s = h ? suggestTargets(state.workout, h.items, { paceUnit: m.paceUnit }) : null;
+  state.suggestion = s;
+  box.hidden = !s;
+  if (!s) return;
+  const parts = [`${formatPace(s.pace)} /${m.paceUnit}m`, `${s.watts} W`];
+  if (s.spm) parts.push(`~${s.spm} ${m.cadenceUnit}`);
+  if (s.hr) parts.push(`~${s.hr} bpm`);
+  $('#suggest-main').textContent = parts.join(' · ');
+  $('#suggest-basis').textContent = s.basis === 'similar'
+    ? `Average of your last ${s.count === 1 ? 'session' : `${s.count} sessions`} of this workout.`
+    : `Predicted from your best recent pieces (${s.count} in the last few months). Stroke rate and heart rate are what you usually do at this pace.`;
+  const applied = s.targets.every((t) => state.workout.segments[t.index].targetPace === t.pace);
+  const btn = $('#suggest-apply');
+  btn.disabled = applied;
+  btn.textContent = applied ? 'Targets set' : 'Use these targets';
+}
+
+function renderHistoryStatus(text) {
+  const h = logbookHistory();
+  $('#lb-refresh').hidden = !logbook.connected;
+  $('#lb-history').textContent = text ?? (h ? `Workout history: ${h.items.length} ${machineInfo(settings.machine).label} workouts from the last year, used for suggested targets.` : '');
+}
+
+async function refreshLogbookHistory({ force = false } = {}) {
+  const type = LOGBOOK_TYPES[settings.machine];
+  if (!logbook.connected || !type) { renderHistoryStatus(); return; }
+  const h = logbookHistory();
+  if (!force && h && Date.now() - h.fetchedAt < LB_HISTORY_MAX_AGE_MS) { renderHistoryStatus(); return; }
+  renderHistoryStatus('Loading your workout history…');
+  try {
+    const items = await logbook.history({ type });
+    store.set(LB_HISTORY_KEY, { type, fetchedAt: Date.now(), items });
+    renderHistoryStatus();
+    renderSuggestion();
+  } catch (err) {
+    renderHistoryStatus(`Couldn't load your workout history: ${err.message}`);
+  }
 }
 
 // ---------- plan ----------
@@ -427,6 +481,8 @@ function setMachine(machine) {
   if (state.erg?.kind === 'sim') state.erg.device.machine = machine;
   updateUnitLabels();
   renderLivePreview();
+  renderSuggestion();
+  refreshLogbookHistory();
 }
 
 // ---------- workout ----------
@@ -919,11 +975,13 @@ async function renderLogbook() {
   $('#lb-weight').value = logbook.config.weightClass;
   $('#lb-auto').checked = logbook.config.autoSync;
   $('#lb-connect').textContent = logbook.connected ? 'Disconnect Logbook' : 'Connect Logbook';
+  renderHistoryStatus();
   if (!logbook.connected) { setLogbookStatus('Not connected.'); return; }
   setLogbookStatus('Connected.', 'ok');
   try {
     const u = logbook.user ?? (await logbook.me());
     setLogbookStatus(`Connected as ${u.username || u.first_name || 'you'}.`, 'ok');
+    refreshLogbookHistory();
   } catch (err) {
     setLogbookStatus(`Connected, but the Logbook didn't answer: ${err.message}`, 'error');
   }
@@ -960,6 +1018,7 @@ async function sendToLogbook() {
     const result = buildLogbookResult(s, state.summaryWorkout, { weightClass: logbook.config.weightClass });
     const r = await logbook.upload(result);
     setSendStatus(r.duplicate ? 'Already in your Logbook.' : 'Saved to your Concept2 Logbook.', 'ok');
+    refreshLogbookHistory({ force: true });
   } catch (err) {
     setSendStatus(`Not saved: ${err.message}`, 'error');
     btn.disabled = false;
@@ -1122,6 +1181,10 @@ function init() {
     if (s) download(lapsToCsv(s), `${fileStem(s)}_splits.csv`, 'text/csv');
   });
   $('#lb-send').addEventListener('click', sendToLogbook);
+  $('#lb-refresh').addEventListener('click', () => refreshLogbookHistory({ force: true }));
+  $('#suggest-apply').addEventListener('click', () => {
+    if (state.suggestion) selectWorkout(applyTargets(state.workout, state.suggestion));
+  });
   $('#lb-server').addEventListener('change', (e) => logbook.saveConfig({ serverUrl: e.target.value.trim() }));
   $('#lb-weight').addEventListener('change', (e) => logbook.saveConfig({ weightClass: e.target.value }));
   $('#lb-auto').addEventListener('change', (e) => logbook.saveConfig({ autoSync: e.target.checked }));

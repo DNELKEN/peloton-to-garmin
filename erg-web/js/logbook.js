@@ -5,6 +5,7 @@
 // the tokens back to this page in the URL fragment; they are kept in this browser only.
 
 import { splitFor } from './pm5-workouts.js';
+import { normalizeResult } from './insights.js';
 
 const TOKEN_KEY = 'erg-trainer.logbook.tokens';
 const CONFIG_KEY = 'erg-trainer.logbook.config';
@@ -247,6 +248,26 @@ export class LogbookClient {
     if (status !== 200) throw new Error(data.message || `Logbook error ${status}`);
     this.user = data.data;
     return this.user;
+  }
+
+  // Past results of one machine type, newest first, normalized for suggested targets.
+  async history({ type, days = 365, perPage = 250, maxPages = 8 } = {}) {
+    const from = logbookDate(Date.now() - days * 86400000).slice(0, 10);
+    const out = [];
+    for (let page = 1; page <= maxPages; page++) {
+      const q = new URLSearchParams({ from, number: String(perPage), page: String(page) });
+      if (type) q.set('type', type);
+      const { status, data } = await this.api('GET', `users/me/results?${q}`);
+      if (status === 401 || status === 403) throw new Error('Reconnect the Logbook to allow reading your workout history.');
+      if (status !== 200) throw new Error(data.message || `Logbook error ${status}`);
+      for (const r of data.data ?? []) {
+        const n = normalizeResult(r);
+        if (n) out.push(n);
+      }
+      const p = data.meta?.pagination;
+      if (!p || p.current_page >= p.total_pages) break;
+    }
+    return out.sort((a, b) => b.date - a.date);
   }
 
   // Returns { ok, duplicate, id } or throws with the Logbook's message.

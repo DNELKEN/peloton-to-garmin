@@ -5,7 +5,7 @@
 //   GET  /callback   -> swaps Concept2's code for tokens (needs the client secret), then returns
 //                       you to the app with the tokens in the URL fragment
 //   POST /refresh    -> renews an expired access token
-// and relays two Logbook API calls (GET users/me, POST users/me/results) for the app.
+// and relays three Logbook API calls (GET users/me, GET and POST users/me/results) for the app.
 //
 // Settings (wrangler.toml [vars] and `wrangler secret put`):
 //   C2_CLIENT_ID      from your Concept2 developer account
@@ -14,12 +14,15 @@
 //   C2_BASE_URL       https://log-dev.concept2.com while testing, https://log.concept2.com once approved
 //   APP_URL           where the app lives, e.g. https://you.github.io/peloton-to-garmin/erg-web/
 
-const SCOPE = 'user:read,results:write';
+const SCOPE = 'user:read,results:read,results:write';
 const STATE_TTL_MS = 10 * 60 * 1000;
 const ALLOWED_API = [
   { method: 'GET', path: 'users/me' },
+  { method: 'GET', path: 'users/me/results' }, // history, for suggested targets
   { method: 'POST', path: 'users/me/results' },
 ];
+// Query parameters passed through on GET users/me/results (filters and paging).
+const ALLOWED_QUERY = ['from', 'to', 'type', 'number', 'page', 'updated_after'];
 
 const enc = new TextEncoder();
 const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -116,7 +119,12 @@ export default {
       if (!ALLOWED_API.some((a) => a.method === request.method && a.path === path)) return cors(env, json({ message: 'Not allowed' }, 404));
       const auth = request.headers.get('Authorization');
       if (!auth?.startsWith('Bearer ')) return cors(env, json({ message: 'Missing token' }, 401));
-      const res = await fetch(`${env.C2_BASE_URL}/api/${path}`, {
+      const query = new URLSearchParams();
+      if (request.method === 'GET') {
+        for (const k of ALLOWED_QUERY) if (url.searchParams.has(k)) query.set(k, url.searchParams.get(k));
+      }
+      const qs = query.toString();
+      const res = await fetch(`${env.C2_BASE_URL}/api/${path}${qs ? `?${qs}` : ''}`, {
         method: request.method,
         headers: { Authorization: auth, 'Content-Type': 'application/json', Accept: 'application/vnd.c2logbook.v1+json', 'X-Client-Version': 'erg-trainer-1' },
         body: request.method === 'POST' ? await request.text() : undefined,

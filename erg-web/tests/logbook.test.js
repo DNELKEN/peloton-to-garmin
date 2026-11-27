@@ -86,7 +86,7 @@ test('server: login redirects to Concept2 with scope, callback and state', async
   assert.equal(res.status, 302);
   const loc = new URL(res.headers.get('Location'));
   assert.equal(loc.origin + loc.pathname, 'https://log-dev.concept2.com/oauth/authorize');
-  assert.equal(loc.searchParams.get('scope'), 'user:read,results:write');
+  assert.equal(loc.searchParams.get('scope'), 'user:read,results:read,results:write');
   assert.equal(loc.searchParams.get('redirect_uri'), 'https://sync.example.workers.dev/callback');
   assert.ok(await checkState(env.STATE_SECRET, loc.searchParams.get('state')));
 });
@@ -117,7 +117,7 @@ test('server: callback exchanges the code with the secret and returns tokens in 
   }
 });
 
-test('server: relays only the two allowed API calls, with CORS for the app', async () => {
+test('server: relays only the allowed API calls, with CORS for the app', async () => {
   const realFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, init) => { calls.push({ url, method: init.method }); return new Response('{"data":{"id":1}}', { status: 201 }); };
@@ -129,6 +129,9 @@ test('server: relays only the two allowed API calls, with CORS for the app', asy
     const blocked = await worker.fetch(new Request('https://s.dev/api/users/me/results/5', { method: 'DELETE', headers: { Authorization: 'Bearer AT' } }), env);
     assert.equal(blocked.status, 404);
     assert.equal(calls.length, 1);
+    // History: filters and paging pass through, anything else is dropped.
+    await worker.fetch(new Request('https://s.dev/api/users/me/results?type=rower&from=2026-01-01&number=250&page=2&evil=1', { headers: { Authorization: 'Bearer AT' } }), env);
+    assert.deepEqual(calls[1], { url: 'https://log-dev.concept2.com/api/users/me/results?from=2026-01-01&type=rower&number=250&page=2', method: 'GET' });
   } finally {
     globalThis.fetch = realFetch;
   }

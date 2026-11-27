@@ -2,7 +2,8 @@
 
 Erg Trainer sends workouts to your Concept2 Logbook through this tiny server. It's needed because
 Concept2's sign-in uses a **client secret** that must never be put in a public web page. The server
-holds the secret, handles sign-in, and relays two calls: read your profile, and add a result.
+holds the secret, handles sign-in, and relays three calls: read your profile, read your past results
+(for suggested targets), and add a result.
 Your Logbook tokens are kept in your browser; the server stores nothing.
 
 It runs free on Cloudflare Workers. Setup takes about 15 minutes, plus Concept2's approval time.

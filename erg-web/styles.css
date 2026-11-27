@@ -352,3 +352,9 @@ main { max-width: 760px; margin: 0 auto; padding: 16px; }
 .lb-status { margin: 0 0 10px; }
 .lb-status[data-state="ok"] { color: var(--good); }
 .lb-status[data-state="error"] { color: var(--bad); }
+
+.suggest { border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); padding: 10px 12px; margin: 0 0 12px; }
+.suggest-head { margin: 0; font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.suggest-main { margin: 4px 0 0; font-size: 1.05rem; font-weight: 600; }
+.suggest .btn { margin-top: 10px; }
+#lb-refresh { margin-top: 8px; }
