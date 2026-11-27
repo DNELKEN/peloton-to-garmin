@@ -4,6 +4,7 @@ import { WorkoutEngine } from '../js/workout.js';
 import { buildCircuit, buildErgathlon, machinesIn, nextLegOn, splitByMachine } from '../js/multi.js';
 import { buildLogbookResult } from '../js/logbook.js';
 import { encodeFit, lapsToCsv } from '../js/fit.js';
+import { PM5Device } from '../js/pm5.js';
 
 const START = Date.UTC(2026, 10, 27, 15);
 
@@ -116,4 +117,69 @@ test('multi-erg FIT file is a multisport activity', () => {
   assert.equal(csv.length, 1 + 3);
   assert.match(csv[2], /^2,transition,bikeerg,/);
   assert.match(csv[3], /,bikeerg,.*,1000,/);
+});
+
+// A pretend PM5 over Web Bluetooth: connecting fails while it "sleeps".
+function fakeBluetoothDevice() {
+  const listeners = {};
+  const char = () => ({ addEventListener() {}, startNotifications: async () => {}, writeValue: async () => {} });
+  const service = { getCharacteristic: async () => char() };
+  const device = {
+    name: 'PM5 430000001 Row',
+    asleep: false,
+    connects: 0,
+    addEventListener: (type, fn) => { listeners[type] = fn; },
+    drop: () => listeners.gattserverdisconnected(),
+    gatt: {
+      connect: async () => {
+        device.connects += 1;
+        if (device.asleep) throw new Error('NetworkError');
+        return { getPrimaryService: async () => service };
+      },
+      disconnect() {},
+    },
+  };
+  return device;
+}
+
+test('a sleeping PM5 is reconnected once it wakes, without the picker', async () => {
+  const events = [];
+  const pm = new PM5Device({ onData() {}, onDisconnect: () => events.push('gone') });
+  pm.device = fakeBluetoothDevice();
+  pm.device.addEventListener('gattserverdisconnected', () => pm.lostConnection()); // as connect() does
+  await pm.attach();
+  pm.reconnectMs = 5;
+  pm.onConnectionChange = (ok) => events.push(ok ? 'back' : 'lost');
+  pm.setAutoReconnect(true);
+
+  pm.device.asleep = true;
+  pm.device.drop();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(events, ['lost']);
+  assert.ok(pm.device.connects >= 3); // kept trying
+  pm.device.asleep = false; // someone pulls the handle
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(events, ['lost', 'back']);
+  assert.equal(pm.connected, true);
+
+  // Without auto-reconnect (or after the user disconnects) a drop is final.
+  pm.setAutoReconnect(false);
+  pm.device.drop();
+  assert.deepEqual(events, ['lost', 'back', 'gone']);
+});
+
+test('after a reconnect, a machine starts counting from its next reading', () => {
+  const w = buildErgathlon([{ machine: 'rower', kind: 'distance', value: 100 }, { machine: 'ski', kind: 'distance', value: 100 }]);
+  const e = new WorkoutEngine(w);
+  e.ingest({ source: 'ski', distance: 640 }, START); // ski shows an old total
+  e.ingest({ source: 'rower', distance: 0, speed: 0 }, START);
+  for (let i = 1; i <= 26; i++) e.ingest({ source: 'rower', distance: i * 4, speed: 4 }, START + i * 1000);
+  assert.equal(e.segment.type, 'transition');
+  e.resetSource('ski'); // ski PM5 woke up and reconnected with a fresh display
+  e.ingest({ source: 'ski', distance: 0, speed: 0 }, START + 40000);
+  assert.equal(e.segment.type, 'transition'); // a reset display is not movement
+  e.ingest({ source: 'ski', distance: 2, speed: 4 }, START + 40500);
+  assert.equal(e.segment.type, 'work');
+  assert.equal(e.segment.machine, 'ski');
+  assert.ok(Math.abs(e.totalDistance - 102) < 0.01);
 });

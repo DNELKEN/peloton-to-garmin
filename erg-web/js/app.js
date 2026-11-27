@@ -175,7 +175,9 @@ function renderMultiMachines() {
     row.dataset.connected = String(!!conn);
     row.innerHTML = '<div><div class="mm-name"></div><div class="mm-status"></div></div><div class="mm-buttons"></div>';
     row.querySelector('.mm-name').textContent = machineInfo(machine).label;
-    row.querySelector('.mm-status').textContent = conn ? `Connected: ${conn.name}` : 'Not connected';
+    row.querySelector('.mm-status').textContent = !conn ? 'Not connected'
+      : conn.connected === false ? 'Asleep or out of range: reconnecting when it wakes' : `Connected: ${conn.name}`;
+    if (conn?.connected === false) row.dataset.connected = 'waiting';
     const buttons = row.querySelector('.mm-buttons');
     for (const [kind, label] of [['pm5', 'PM5'], ['sim', 'Simulate']]) {
       const b = document.createElement('button');
@@ -354,6 +356,26 @@ async function openErg(kind, machine, onGone) {
   return conn;
 }
 
+// Multi-erg PM5s sit idle for long stretches and may go to sleep. Keep checking in with them,
+// and when one drops, keep reconnecting until it wakes (when someone starts using it).
+function keepConnected(conn) {
+  if (conn.kind !== 'pm5') return;
+  conn.connected = true;
+  conn.device.onConnectionChange = (ok) => {
+    conn.connected = ok;
+    const e = state.engine;
+    if (ok && e?.multi && e.state !== 'finished') {
+      e.resetSource(conn.machine);
+      // Woke up before its leg: load the leg again, unless it's the one in progress.
+      const seg = e.segment;
+      if (!(seg.type === 'work' && seg.machine === conn.machine)) loadNextLeg(e, e.segIndex - 1, conn.machine);
+    }
+    updateConnectionUi();
+  };
+  conn.device.setAutoReconnect(true);
+  conn.device.startKeepAlive();
+}
+
 async function connectMulti(machine, kind) {
   try {
     const old = state.ergs[machine];
@@ -369,6 +391,7 @@ async function connectMulti(machine, kind) {
       conn.device.disconnect();
     } else {
       state.ergs[machine] = conn;
+      keepConnected(conn);
     }
   } catch (err) {
     if (err?.name !== 'NotFoundError') alert(`Could not connect: ${err?.message ?? err}`);
@@ -464,13 +487,15 @@ async function loadLegsOntoPm5s(workout) {
 }
 
 // Multi-erg: as soon as a leg finishes, load that machine's next leg so it is ready in time.
-function loadNextLeg(engine, finishedIndex) {
+// With `machine` given, load that machine's next leg after `finishedIndex` whatever just finished.
+function loadNextLeg(engine, finishedIndex, machine) {
   const seg = engine.workout.segments[finishedIndex];
-  if (!settings.pushToPm5 || seg?.type !== 'work') return;
-  const conn = connFor(seg.machine);
-  const next = nextLegOn(engine.workout, seg.machine, finishedIndex);
-  if (conn?.kind !== 'pm5' || !conn.device.canProgram || !next) return;
-  conn.device.programWorkout({ segments: [next.segment] }, { sendTargets: machineInfo(seg.machine).paceUnit === 500 })
+  const m = machine ?? (seg?.type === 'work' ? seg.machine : null);
+  if (!settings.pushToPm5 || !m) return;
+  const conn = connFor(m);
+  const next = nextLegOn(engine.workout, m, finishedIndex);
+  if (conn?.kind !== 'pm5' || !conn.device.canProgram || conn.connected === false || !next) return;
+  conn.device.programWorkout({ segments: [next.segment] }, { sendTargets: machineInfo(m).paceUnit === 500 })
     .catch(() => { /* the monitor still streams data; the leg is tracked by the app either way */ });
 }
 
@@ -545,6 +570,7 @@ function renderWorkout() {
   $('#w-pace-label').textContent = `Split /${m.paceUnit}m`;
   $('#w-cad-label').textContent = m.cadenceUnit === 'rpm' ? 'Cadence' : 'Stroke rate';
 
+  renderMachineStatus(e);
   if (e.multi) {
     $('#w-seg-label').textContent = isTransition
       ? `Change to the ${m.label}`
@@ -759,6 +785,21 @@ function drawForceCurve(svg, curves) {
   out += `<circle class="curve-peak" r="4.5" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}"/>`;
   out += `<text class="curve-axis" x="${px.toFixed(1)}" y="${(py - 8).toFixed(1)}" text-anchor="middle">${Math.round(latest[pi])}</text>`;
   svg.innerHTML = out;
+}
+
+// Multi-erg: one chip per machine, so a monitor that fell asleep is spotted before the changeover.
+function renderMachineStatus(e) {
+  const el = $('#w-machines');
+  el.hidden = !e.multi;
+  if (!e.multi) return;
+  const active = e.machineOf(e.segment);
+  const html = machinesIn(e.workout).map((m) => {
+    const conn = connFor(m);
+    const st = !conn ? 'off' : conn.connected === false ? 'waiting' : 'on';
+    const note = st === 'waiting' ? ' · reconnecting' : st === 'off' ? ' · not connected' : '';
+    return `<span class="chip" data-on="${st === 'on'}" data-state="${st}"${m === active ? ' aria-current="true"' : ''}>${shortName(m)}${note}</span>`;
+  }).join('');
+  if (el.innerHTML !== html) el.innerHTML = html;
 }
 
 function renderSimEffort() {

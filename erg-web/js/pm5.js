@@ -165,6 +165,10 @@ export const PM5_HANDLERS = {
   },
 };
 
+const PM5_RECONNECT_MS = 3000;
+const PM5_KEEPALIVE_MS = 60000;
+const CSAFE_GET_STATUS = 0x80; // public short command: returns the monitor's state
+
 // Older monitor firmware may not offer these; the workout still runs without them.
 const OPTIONAL = new Set([PM5_UUIDS.strokeData, PM5_UUIDS.forceCurve]);
 
@@ -182,7 +186,65 @@ export class PM5Device {
       filters: [{ services: [PM5_UUIDS.discoveryService] }, { namePrefix: 'PM5' }],
       optionalServices: [PM5_UUIDS.infoService, PM5_UUIDS.controlService, PM5_UUIDS.rowingService],
     });
-    this.device.addEventListener('gattserverdisconnected', () => this.onDisconnect?.());
+    this.device.addEventListener('gattserverdisconnected', () => this.lostConnection());
+    await this.attach();
+    return this.device.name || 'Concept2 PM5';
+  }
+
+  // ---- staying connected ----
+  // A PM5 left alone goes to sleep and drops the connection. With autoReconnect on, keep trying
+  // to reconnect (no picker needed for a device already chosen); it succeeds once the monitor
+  // wakes, which it does when someone starts using the machine.
+
+  lostConnection() {
+    this.connected = false;
+    if (!this.autoReconnect) { this.onDisconnect?.(); return; }
+    this.onConnectionChange?.(false);
+    this.retryReconnect();
+  }
+
+  retryReconnect() {
+    clearTimeout(this.reconnectTimer);
+    if (!this.autoReconnect || this.connected) return;
+    this.reconnectTimer = setTimeout(async () => {
+      if (!this.autoReconnect || this.connected) return;
+      try {
+        await this.attach();
+        this.onConnectionChange?.(true);
+      } catch {
+        this.retryReconnect();
+      }
+    }, this.reconnectMs ?? PM5_RECONNECT_MS);
+  }
+
+  setAutoReconnect(on) {
+    this.autoReconnect = on;
+    if (!on) clearTimeout(this.reconnectTimer);
+  }
+
+  // Ask the monitor for its status now and then. Harmless, and it may stop an idle PM5 from
+  // going to sleep. Skipped while a workout is being loaded.
+  startKeepAlive(ms = PM5_KEEPALIVE_MS) {
+    this.stopKeepAlive();
+    this.keepAliveTimer = setInterval(() => {
+      if (!this.connected || !this.tx || this.waiter) return;
+      this.sendFrame([CSAFE_GET_STATUS], 1000).catch(() => {});
+    }, ms);
+  }
+
+  stopKeepAlive() {
+    clearInterval(this.keepAliveTimer);
+  }
+
+  // The browser may hand back the same characteristic after a reconnect: listen only once.
+  listen(ch, fn) {
+    this.listening ??= new WeakSet();
+    if (this.listening.has(ch)) return;
+    this.listening.add(ch);
+    ch.addEventListener('characteristicvaluechanged', (e) => fn(e.target.value));
+  }
+
+  async attach() {
     const server = await this.device.gatt.connect();
     const rowing = await server.getPrimaryService(PM5_UUIDS.rowingService);
 
@@ -196,7 +258,7 @@ export class PM5Device {
       const control = await server.getPrimaryService(PM5_UUIDS.controlService);
       this.tx = await control.getCharacteristic(PM5_UUIDS.controlTransmit);
       const rx = await control.getCharacteristic(PM5_UUIDS.controlReceive);
-      rx.addEventListener('characteristicvaluechanged', (e) => this.onControlData(e.target.value));
+      this.listen(rx, (dv) => this.onControlData(dv));
       await rx.startNotifications();
     } catch {
       this.tx = null; // monitor still streams data; workouts just can't be loaded
@@ -206,13 +268,15 @@ export class PM5Device {
     for (const [uuid, parse] of subscriptions) {
       try {
         const ch = await rowing.getCharacteristic(uuid);
-        ch.addEventListener('characteristicvaluechanged', (e) => this.handle(uuid, parse, e.target.value));
+        this.listen(ch, (dv) => this.handle(uuid, parse, dv));
         await ch.startNotifications();
       } catch (err) {
         if (!OPTIONAL.has(uuid)) throw err;
       }
     }
-    return this.device.name || 'Concept2 PM5';
+    this.status = null; // a fresh connection: don't compare with readings from before
+    this.curve.reset();
+    this.connected = true;
   }
 
   parseForceCurve(dv) {
@@ -312,6 +376,8 @@ export class PM5Device {
   }
 
   disconnect() {
+    this.setAutoReconnect(false);
+    this.stopKeepAlive();
     this.device?.gatt?.disconnect();
   }
 }
