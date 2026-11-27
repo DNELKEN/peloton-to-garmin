@@ -42,6 +42,7 @@
           <button type="button" class="tab" role="tab" data-tab="quick" aria-selected="true">Quick</button>
           <button type="button" class="tab" role="tab" data-tab="plan" aria-selected="false">Pete Plan</button>
           <button type="button" class="tab" role="tab" data-tab="custom" aria-selected="false">Build</button>
+          <button type="button" class="tab" role="tab" data-tab="multi" aria-selected="false">Multi-erg</button>
         </div>
 
         <div data-panel="quick" role="tabpanel">
@@ -59,6 +60,41 @@
             <summary>How the plan works</summary>
             <ul id="plan-notes"></ul>
           </details>
+        </div>
+
+        <div data-panel="multi" role="tabpanel" hidden>
+          <form id="multi-form" class="multi-form">
+            <div class="seg-toggle" role="radiogroup" aria-label="Format">
+              <label><input type="radio" name="format" value="circuit" checked><span>Circuit</span></label>
+              <label><input type="radio" name="format" value="ergathlon"><span>Ergathlon</span></label>
+            </div>
+            <p class="hint" id="multi-format-hint">The same leg on each machine in turn, round after round.</p>
+            <div class="custom-grid">
+              <label class="field"><span>Legs by</span>
+                <select name="kind"><option value="distance">Distance</option><option value="time">Time</option></select>
+              </label>
+              <label class="field" data-for="circuit"><span>Rounds</span><input name="rounds" type="number" min="1" max="20" value="3" inputmode="numeric"></label>
+              <label class="field" data-for="circuit"><span class="multi-value-label">Each leg (m)</span><input name="value" value="500"></label>
+            </div>
+            <div class="multi-legs">
+              <div class="multi-leg">
+                <label class="field"><span>1st machine</span><select name="m1"></select></label>
+                <label class="field" data-for="ergathlon"><span class="multi-value-label">Distance (m)</span><input name="v1" value="2000"></label>
+              </div>
+              <div class="multi-leg">
+                <label class="field"><span>2nd machine</span><select name="m2"></select></label>
+                <label class="field" data-for="ergathlon"><span class="multi-value-label">Distance (m)</span><input name="v2" value="4000"></label>
+              </div>
+              <div class="multi-leg">
+                <label class="field"><span>3rd machine</span><select name="m3"></select></label>
+                <label class="field" data-for="ergathlon"><span class="multi-value-label">Distance (m)</span><input name="v3" value="2000"></label>
+              </div>
+            </div>
+            <label class="check" data-for="circuit"><input type="checkbox" name="matchBike" checked><span>Double the BikeErg distance to match the effort</span></label>
+            <p class="hint">The clock keeps running between legs. Each leg starts as soon as you start moving on its machine.</p>
+            <button class="btn" type="submit">Use this workout</button>
+            <p class="form-error" id="multi-error" role="alert"></p>
+          </form>
         </div>
 
         <div data-panel="custom" role="tabpanel" hidden>
@@ -89,6 +125,7 @@
           <input type="checkbox" id="push-pm5" checked>
           <span>Load this workout onto the PM5</span>
         </label>
+        <div class="multi-machines" id="multi-machines" hidden></div>
         <p class="push-status" id="push-status" role="status"></p>
         <button class="btn btn-primary btn-big" id="start" disabled>Connect an erg to start</button>
       </div>
@@ -129,27 +166,87 @@
 
     <!-- ============ WORKOUT ============ -->
     <section id="view-workout" class="view" hidden>
+      <div class="w-main">
       <div class="seg-header">
         <span class="seg-label" id="w-seg-label"></span>
         <span class="seg-next" id="w-next"></span>
       </div>
+      <div class="chips w-machines" id="w-machines" hidden></div>
       <div class="hero" id="w-hero-wrap">
         <div class="hero-value" id="w-hero">--</div>
         <div class="hero-caption" id="w-hero-caption"></div>
         <div class="progress"><div class="progress-bar" id="w-progress"></div></div>
       </div>
 
-      <div class="target" id="w-target" hidden></div>
+      <div class="pace-panel" id="w-pace-panel">
+        <div class="pace-now">
+          <span class="m-label" id="w-pace-label">Split /500m</span>
+          <span class="pace-value" id="w-pace">--:--</span>
+        </div>
+        <div class="pace-target" id="w-pace-target">
+          <span class="m-label" id="w-target-label">Rep average</span>
+          <span class="pace-target-value" id="w-target-value">--:--</span>
+          <span class="pace-delta" id="w-target-delta"></span>
+        </div>
+        <div class="pace-band" id="w-band" hidden aria-hidden="true">
+          <div class="band-zone"></div>
+          <div class="band-center"></div>
+          <div class="band-marker" id="w-band-marker"></div>
+          <span class="band-label band-faster">faster</span>
+          <span class="band-label band-slower">slower</span>
+        </div>
+      </div>
 
-      <div class="metrics">
-        <div class="metric metric-lg"><span class="m-label" id="w-pace-label">Pace /500m</span><span class="m-value" id="w-pace">--:--</span></div>
-        <div class="metric metric-lg"><span class="m-label">Split avg</span><span class="m-value" id="w-seg-pace">--:--</span></div>
-        <div class="metric"><span class="m-label" id="w-cad-label">Stroke rate</span><span class="m-value" id="w-cadence">--</span></div>
-        <div class="metric"><span class="m-label">Watts</span><span class="m-value" id="w-power">--</span></div>
-        <div class="metric"><span class="m-label">Heart rate</span><span class="m-value" id="w-hr">--</span></div>
-        <div class="metric"><span class="m-label">Calories</span><span class="m-value" id="w-cal">0</span></div>
-        <div class="metric"><span class="m-label">Total distance</span><span class="m-value" id="w-dist">0 m</span></div>
-        <div class="metric"><span class="m-label">Total time</span><span class="m-value" id="w-time">0:00</span></div>
+      <div class="tiles">
+        <div class="metric"><span class="m-label" id="w-cad-label">Stroke rate</span><span class="m-value" id="w-cadence">--</span><span class="m-sub" id="w-cadence-sub"></span></div>
+        <div class="metric"><span class="m-label">Watts</span><span class="m-value" id="w-power">--</span><span class="m-sub" id="w-power-sub"></span></div>
+        <div class="metric"><span class="m-label">Heart rate</span><span class="m-value" id="w-hr">--</span><span class="m-sub" id="w-hr-sub"></span></div>
+      </div>
+
+      <div class="minis">
+        <div><span class="m-label">Rep avg</span><strong id="w-seg-pace">--:--</strong></div>
+        <div><span class="m-label" id="w-proj-label">Projected</span><strong id="w-proj">--</strong></div>
+        <div><span class="m-label">Total</span><strong id="w-dist">0 m</strong></div>
+        <div><span class="m-label">Time</span><strong id="w-time">0:00</strong></div>
+      </div>
+
+      </div>
+
+      <div class="w-side" id="w-side">
+      <section class="stroke-panel" id="w-stroke" hidden aria-label="Stroke">
+        <div class="stroke-head">
+          <h2>Stroke</h2>
+          <label class="stroke-view">
+            <span class="visually-hidden">Show</span>
+            <select id="stroke-view">
+              <option value="curve">Force curve</option>
+              <option value="off">Numbers only</option>
+            </select>
+          </label>
+        </div>
+        <div class="stroke-body" id="w-stroke-body">
+          <figure class="curve-wrap" id="w-curve-wrap">
+            <svg id="w-curve" viewBox="0 0 300 150" role="img" aria-label="Force curve of the last stroke"></svg>
+            <figcaption class="hint" id="w-curve-caption">Force through the drive. Faint lines are the strokes before.</figcaption>
+          </figure>
+        </div>
+        <div class="stroke-stats">
+          <div><span class="m-label">Stroke length</span><strong id="w-length">--</strong></div>
+          <div><span class="m-label">Peak force</span><strong id="w-peak">--</strong></div>
+          <div><span class="m-label">Drive : recovery</span><strong id="w-ratio">--</strong></div>
+        </div>
+        <p class="stroke-hint" id="w-hint" hidden></p>
+      </section>
+
+      <section class="pieces-panel" id="w-pieces" aria-label="Pieces so far">
+        <h2>Pieces</h2>
+        <div class="table-wrap">
+          <table class="laps pieces">
+            <thead><tr><th>#</th><th id="w-pieces-pace">/500m</th><th>Rate</th><th>Watts</th><th>HR</th><th>vs target</th></tr></thead>
+            <tbody id="w-pieces-body"></tbody>
+          </table>
+        </div>
+      </section>
       </div>
 
       <div class="sim-controls" id="sim-controls" hidden>
