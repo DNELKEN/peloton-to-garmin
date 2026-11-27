@@ -88,7 +88,9 @@ const newAcc = () => ({ time: 0, movingTime: 0, power: 0, cadence: 0, hr: 0, hrT
 export class WorkoutEngine {
   constructor(workout, { machine = 'rower', onSegmentChange = () => {}, onFinish = () => {} } = {}) {
     this.workout = workout;
-    this.machine = machine;
+    // A multi-erg workout names a machine on every segment; data from the other machines is ignored.
+    this.multi = !!workout.multi;
+    this.machine = this.multi ? 'multi' : machine;
     this.unit = machineInfo(machine).paceUnit;
     this.onSegmentChange = onSegmentChange;
     this.onFinish = onFinish;
@@ -100,7 +102,7 @@ export class WorkoutEngine {
     this.live = { speed: 0, cadence: 0, power: 0, heartRate: null };
     this.lastDataAt = 0;
     this.lastHrAt = 0;
-    this.lastDeviceDistance = null;
+    this.lastDevice = {}; // source -> { distance, at }: each machine counts its own metres
     this.useDeviceDistance = false;
     this.laps = [];
     this.samples = [];
@@ -112,10 +114,36 @@ export class WorkoutEngine {
     return this.workout.segments[this.segIndex];
   }
 
+  machineOf(seg) {
+    return seg.machine ?? this.machine;
+  }
+
+  unitOf(seg) {
+    return machineInfo(this.machineOf(seg)).paceUnit;
+  }
+
   // Feed one normalized update from a device: any of distance, speed, cadence, power, heartRate.
+  // In a multi-erg workout, tag each update with `source` (the machine it came from).
   ingest(u, now) {
     if (this.state === 'finished') return;
     if (u.heartRate != null) { this.live.heartRate = u.heartRate; this.lastHrAt = now; }
+
+    // Every machine's distance is tracked, so a machine that sat idle starts its leg from zero.
+    let d = 0;
+    let prevAt = now;
+    if (u.distance != null) {
+      const key = u.source ?? '_';
+      const prev = this.lastDevice[key];
+      prevAt = prev?.at ?? now;
+      this.lastDevice[key] = { distance: u.distance, at: now };
+      d = prev == null ? 0 : u.distance - prev.distance;
+      // The PM5 restarts its distance at each interval of a programmed workout: count from zero.
+      if (d < 0 && u.distance < MAX_DISTANCE_JUMP) d = u.distance;
+      if (!(d > 0 && d < MAX_DISTANCE_JUMP)) d = 0;
+    }
+
+    if (this.multi && u.source != null && u.source !== this.machineOf(this.segment)) return;
+
     if (u.speed != null) this.live.speed = u.speed;
     if (u.cadence != null) this.live.cadence = u.cadence;
     if (u.power != null) this.live.power = u.power;
@@ -123,20 +151,15 @@ export class WorkoutEngine {
 
     if (u.distance != null) {
       this.useDeviceDistance = true;
-      const prev = this.lastDeviceDistance;
-      const prevAt = this.lastDeviceAt ?? now;
-      this.lastDeviceDistance = u.distance;
-      this.lastDeviceAt = now;
-      let d = prev == null ? 0 : u.distance - prev;
-      // The PM5 restarts its distance at each interval of a programmed workout: count from zero.
-      if (d < 0 && u.distance < MAX_DISTANCE_JUMP) d = u.distance;
-      if (d > 0 && d < MAX_DISTANCE_JUMP) {
-        // Movement began somewhere after the previous reading; start the clock there.
+      if (d > 0) {
+        // Movement began somewhere after the previous reading; start the clock (or the leg) there.
         if (this.state === 'armed') this.begin(prevAt);
-        this.addDistance(d, now);
+        else if (this.segment.type === 'transition') this.completeSegment(prevAt);
+        if (this.state === 'running') this.addDistance(d, now);
       }
-    } else if (this.state === 'armed' && u.speed > 0.5) {
-      this.begin(now);
+    } else if (u.speed > 0.5) {
+      if (this.state === 'armed') this.begin(now);
+      else if (this.state === 'running' && this.segment.type === 'transition') this.completeSegment(now);
     }
   }
 
@@ -149,7 +172,7 @@ export class WorkoutEngine {
     if (this.lastHrAt && now - this.lastHrAt > STALE_HR_MS) this.live.heartRate = null;
 
     this.accumulate(dt);
-    if (!this.useDeviceDistance && this.live.speed > 0) this.addDistance(this.live.speed * dt, now);
+    if (!this.useDeviceDistance && this.live.speed > 0 && this.segment.type !== 'transition') this.addDistance(this.live.speed * dt, now);
     if (this.state !== 'running') return;
 
     if (now - (this.lastSampleAt ?? 0) >= 1000) {
@@ -213,6 +236,8 @@ export class WorkoutEngine {
         // Interpolate the moment the target was crossed between the last two readings.
         const frac = (target - before) / d;
         const finishAt = this.lastDistanceAt + frac * (now - this.lastDistanceAt);
+        // Multi-erg: metres past the end of a leg are coasting on that machine, not the next leg.
+        if (this.multi) this.totalDistance = target;
         this.completeSegment(finishAt, target);
       }
     }
@@ -228,6 +253,7 @@ export class WorkoutEngine {
       index: this.laps.length,
       type: seg.type,
       kind: seg.kind,
+      machine: this.machineOf(seg),
       value: seg.value,
       targetPace: seg.targetPace ?? null,
       partial,
@@ -235,7 +261,7 @@ export class WorkoutEngine {
       endTime,
       duration,
       distance,
-      pace: distance > 0 ? (duration / distance) * this.unit : null,
+      pace: distance > 0 && seg.type !== 'transition' ? (duration / distance) * this.unitOf(seg) : null,
       avgSpeed: duration > 0 ? distance / duration : 0,
       maxSpeed: a.maxSpeed,
       avgPower: a.time ? Math.round(a.power / a.time) : 0,
@@ -253,6 +279,10 @@ export class WorkoutEngine {
     } else {
       this.segStartTime = endTime;
       this.segStartDistance = endDistance;
+      // New machine: forget the last one's speed, rate and power (heart rate carries over).
+      if (this.multi && this.machineOf(this.workout.segments[this.segIndex - 1]) !== this.machineOf(this.segment)) {
+        Object.assign(this.live, { speed: 0, cadence: 0, power: 0 });
+      }
       this.onSegmentChange(this.segment, this.segIndex);
     }
   }
@@ -271,6 +301,7 @@ export class WorkoutEngine {
     const workDistance = workLaps.reduce((s, l) => s + l.distance, 0);
     return {
       name: this.workout.name,
+      multi: this.multi,
       plan: this.workout.plan ?? null,
       machine: this.machine,
       startTime: this.startTime,
@@ -279,7 +310,7 @@ export class WorkoutEngine {
       totalDistance: this.totalDistance,
       workTime,
       workDistance,
-      workPace: workDistance > 0 ? (workTime / workDistance) * this.unit : null,
+      workPace: workDistance > 0 && !this.multi ? (workTime / workDistance) * this.unit : null,
       avgPower: t.time ? Math.round(t.power / t.time) : 0,
       maxPower: Math.round(t.maxPower),
       avgCadence: t.movingTime ? Math.round(t.cadence / t.movingTime) : 0,
@@ -314,13 +345,16 @@ export class WorkoutEngine {
       projected = segDistance + speed * remaining; // finish distance
     }
 
-    const segPace = segDistance > 5 ? (segElapsed / segDistance) * this.unit : null;
+    const unit = this.unitOf(seg);
+    const segPace = segDistance > 5 && seg.type !== 'transition' ? (segElapsed / segDistance) * unit : null;
     const works = this.workout.segments.filter((s) => s.type === 'work').length;
     const workNumber = this.workout.segments.slice(0, this.segIndex + 1).filter((s) => s.type === 'work').length;
 
     return {
       state: this.state,
       seg,
+      machine: this.machineOf(seg),
+      unit,
       segIndex: this.segIndex,
       workNumber,
       works,
@@ -330,7 +364,7 @@ export class WorkoutEngine {
       remaining,
       progress: progress == null ? null : Math.min(1, progress),
       projected,
-      pace: speed > 0.3 ? this.unit / speed : null,
+      pace: speed > 0.3 ? unit / speed : null,
       segPace,
       targetDelta: seg.targetPace && segPace ? segPace - seg.targetPace : null,
       cadence: this.live.cadence,

@@ -42,6 +42,7 @@
           <button type="button" class="tab" role="tab" data-tab="quick" aria-selected="true">Quick</button>
           <button type="button" class="tab" role="tab" data-tab="plan" aria-selected="false">Pete Plan</button>
           <button type="button" class="tab" role="tab" data-tab="custom" aria-selected="false">Build</button>
+          <button type="button" class="tab" role="tab" data-tab="multi" aria-selected="false">Multi-erg</button>
         </div>
 
         <div data-panel="quick" role="tabpanel">
@@ -59,6 +60,41 @@
             <summary>How the plan works</summary>
             <ul id="plan-notes"></ul>
           </details>
+        </div>
+
+        <div data-panel="multi" role="tabpanel" hidden>
+          <form id="multi-form" class="multi-form">
+            <div class="seg-toggle" role="radiogroup" aria-label="Format">
+              <label><input type="radio" name="format" value="circuit" checked><span>Circuit</span></label>
+              <label><input type="radio" name="format" value="ergathlon"><span>Ergathlon</span></label>
+            </div>
+            <p class="hint" id="multi-format-hint">The same leg on each machine in turn, round after round.</p>
+            <div class="custom-grid">
+              <label class="field"><span>Legs by</span>
+                <select name="kind"><option value="distance">Distance</option><option value="time">Time</option></select>
+              </label>
+              <label class="field" data-for="circuit"><span>Rounds</span><input name="rounds" type="number" min="1" max="20" value="3" inputmode="numeric"></label>
+              <label class="field" data-for="circuit"><span class="multi-value-label">Each leg (m)</span><input name="value" value="500"></label>
+            </div>
+            <div class="multi-legs">
+              <div class="multi-leg">
+                <label class="field"><span>1st machine</span><select name="m1"></select></label>
+                <label class="field" data-for="ergathlon"><span class="multi-value-label">Distance (m)</span><input name="v1" value="2000"></label>
+              </div>
+              <div class="multi-leg">
+                <label class="field"><span>2nd machine</span><select name="m2"></select></label>
+                <label class="field" data-for="ergathlon"><span class="multi-value-label">Distance (m)</span><input name="v2" value="4000"></label>
+              </div>
+              <div class="multi-leg">
+                <label class="field"><span>3rd machine</span><select name="m3"></select></label>
+                <label class="field" data-for="ergathlon"><span class="multi-value-label">Distance (m)</span><input name="v3" value="2000"></label>
+              </div>
+            </div>
+            <label class="check" data-for="circuit"><input type="checkbox" name="matchBike" checked><span>Double the BikeErg distance to match the effort</span></label>
+            <p class="hint">The clock keeps running between legs. Each leg starts as soon as you start moving on its machine.</p>
+            <button class="btn" type="submit">Use this workout</button>
+            <p class="form-error" id="multi-error" role="alert"></p>
+          </form>
         </div>
 
         <div data-panel="custom" role="tabpanel" hidden>
@@ -83,6 +119,7 @@
           <input type="checkbox" id="push-pm5" checked>
           <span>Load this workout onto the PM5</span>
         </label>
+        <div class="multi-machines" id="multi-machines" hidden></div>
         <p class="push-status" id="push-status" role="status"></p>
         <button class="btn btn-primary btn-big" id="start" disabled>Connect an erg to start</button>
       </div>
@@ -192,7 +229,7 @@
         <p class="stroke-hint" id="w-hint" hidden></p>
       </section>
 
-      <section class="pieces-panel" id="w-pieces" hidden aria-label="Pieces so far">
+      <section class="pieces-panel" id="w-pieces" aria-label="Pieces so far">
         <h2>Pieces</h2>
         <div class="table-wrap">
           <table class="laps pieces">

@@ -36,6 +36,13 @@ No build step and no dependencies: plain HTML, CSS and JavaScript modules.
 - **Big screens** (1000 px and wider, e.g. a tablet on its side, a laptop or a TV): two columns,
   with the numbers on the left and the stroke panel and pieces on the right, all scaled up to be
   readable from the seat.
+- **Multi-erg workouts**: a Circuit (the same leg on each machine in turn, for a number of
+  rounds, with an option to double BikeErg distances to match the effort) or an Ergathlon (one
+  leg per machine). Connect each machine (PM5 or simulator) before the start. The clock keeps
+  running between legs, and each leg starts as soon as you move on its machine; changeover times
+  are recorded. Each PM5 gets its next leg loaded as soon as its current one ends. Afterwards
+  the Logbook gets one result per machine (legs on the same machine become intervals, with the
+  time away as rest), and the FIT file is a multisport activity with transitions.
 - **After**: splits table, FIT download (records, laps with work/rest intensity, session),
   splits CSV, and a short local history.
 
