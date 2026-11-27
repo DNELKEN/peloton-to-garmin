@@ -79,6 +79,12 @@
       <div class="card">
         <h2><span class="step">3</span> Go</h2>
         <p class="selected">Selected: <strong id="selected-name"></strong></p>
+        <div class="suggest" id="suggest" hidden>
+          <p class="suggest-head">Suggested from your Logbook</p>
+          <p class="suggest-main" id="suggest-main"></p>
+          <p class="hint" id="suggest-basis"></p>
+          <button class="btn" id="suggest-apply">Use these targets</button>
+        </div>
         <label class="check" id="push-row" hidden>
           <input type="checkbox" id="push-pm5" checked>
           <span>Load this workout onto the PM5</span>
@@ -111,6 +117,8 @@
           <label class="check"><input type="checkbox" id="lb-auto"><span>Send each workout automatically</span></label>
         </div>
         <button class="btn" id="lb-connect">Connect Logbook</button>
+        <p class="hint" id="lb-history"></p>
+        <button class="btn" id="lb-refresh" hidden>Refresh workout history</button>
       </div>
 
       <div class="card" id="history-card" hidden>
