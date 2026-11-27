@@ -246,7 +246,7 @@ main { max-width: 760px; margin: 0 auto; padding: 16px; }
 .minis div, .stroke-stats div { display: flex; flex-direction: column; min-width: 0; }
 .minis strong { font-size: 1.05rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* Stroke: force curve, the rower figure and per-stroke numbers (PM5 and simulator only). */
+/* Stroke: force curve and per-stroke numbers (PM5 and simulator only). */
 .stroke-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
 .stroke-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 6px; }
 .stroke-head h2 { margin: 0; font-size: 1rem; }
@@ -255,9 +255,7 @@ main { max-width: 760px; margin: 0 auto; padding: 16px; }
   border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; min-height: 36px;
 }
 .stroke-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
-@media (min-width: 620px) { .stroke-body[data-view="both"] { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; } }
 .stroke-body[data-view="off"] { display: none; }
-.stroke-body[data-view="curve"] .figure-wrap, .stroke-body[data-view="figure"] .curve-wrap { display: none; }
 .stroke-body figure { margin: 0; min-width: 0; }
 .stroke-body svg { display: block; width: 100%; height: auto; }
 .curve-wrap .hint { margin-top: 2px; font-size: 0.75rem; }
@@ -268,23 +266,46 @@ main { max-width: 760px; margin: 0 auto; padding: 16px; }
 .curve-peak { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
 .curve-empty { fill: var(--muted); font-size: 12px; font-family: var(--font); }
 
-.fig-machine line, .fig-machine circle { stroke: var(--muted); stroke-width: 3; fill: none; stroke-linecap: round; }
-.fig-machine .fig-chain { stroke-width: 1.5; stroke-dasharray: 3 3; }
-.fig-seat { fill: var(--muted); }
-.fig-body line { stroke: var(--text); stroke-width: 7; stroke-linecap: round; }
-.fig-body circle { fill: var(--text); }
-.fig-body .fig-handle { fill: var(--accent); }
-.figure-wrap[data-phase="drive"] .fig-body line { stroke: var(--accent); }
-.figure-wrap[data-phase="drive"] .fig-body circle:not(.fig-handle) { fill: var(--accent); }
-.phase { text-align: center; color: var(--muted); font-size: 0.85rem; font-weight: 600; min-height: 1.3em; }
-.figure-wrap[data-phase="drive"] .phase { color: var(--accent); }
-.figure-wrap svg { max-width: 420px; margin: 0 auto; }
 
 .stroke-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px; font-variant-numeric: tabular-nums; }
 .stroke-stats strong { font-size: 1.15rem; }
 .stroke-hint { margin: 10px 0 0; padding: 8px 10px; border-radius: 10px; background: var(--surface-2); font-size: 0.9rem; }
 
 @media (prefers-reduced-motion: reduce) { .band-marker { transition: none; } }
+
+.pieces-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin-top: 10px; }
+.pieces-panel h2 { margin: 0 0 6px; font-size: 1rem; }
+.pieces td.ahead { color: var(--good); }
+.pieces td.behind { color: var(--bad); }
+.pieces tr.current td { color: var(--muted); font-style: italic; }
+.pieces-panel { display: none; }
+.pieces-panel[data-show="true"] { display: block; }
+
+/* Big screens (tablet landscape, laptop, TV): two columns. Numbers on the left, stroke and
+   pieces on the right; everything scales up with the screen so it reads from the erg seat. */
+@media (min-width: 1000px) {
+  main:has(#view-workout:not([hidden])) { max-width: 1500px; }
+  #view-workout:not([hidden]) {
+    display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 0 20px; align-items: start;
+    font-size: clamp(1rem, 1.05vw, 1.5rem);
+  }
+  #view-workout[data-side="empty"]:not([hidden]) { grid-template-columns: minmax(0, 1fr); max-width: 900px; margin: 0 auto; }
+  #view-workout[data-side="empty"] .w-side { display: none; }
+  #view-workout .sim-controls, #view-workout .workout-actions { grid-column: 1 / -1; }
+  #view-workout .workout-actions { max-width: 600px; }
+  .w-side .stroke-panel + .pieces-panel { margin-top: 14px; }
+  #view-workout .hero-value { font-size: clamp(5rem, 9vw, 11rem); }
+  #view-workout .pace-value { font-size: clamp(3.6rem, 5.5vw, 7rem); }
+  #view-workout .pace-target-value { font-size: 2.2em; }
+  #view-workout .m-value { font-size: clamp(2.4rem, 3.4vw, 4.5rem); }
+  #view-workout .m-label, #view-workout .m-sub { font-size: 0.95em; }
+  #view-workout .minis strong { font-size: 1.6em; }
+  #view-workout .seg-label { font-size: 1.5em; }
+  #view-workout .stroke-stats strong { font-size: 1.7em; }
+  #view-workout .stroke-hint { font-size: 1.05em; }
+  #view-workout .pieces { font-size: 1.05em; }
+}
+
 
 .sim-controls { display: flex; gap: 10px; align-items: center; justify-content: center; margin-top: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .workout-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }

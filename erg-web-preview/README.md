@@ -31,9 +31,11 @@ No build step and no dependencies: plain HTML, CSS and JavaScript modules.
 - **Stroke panel** (PM5 and simulator, RowErg and SkiErg): the force curve of each stroke with
   the last few drawn faint behind it, stroke length, peak force, drive : recovery ratio, and a
   technique note when three strokes in a row show a late peak, a very early peak or a dip in the
-  middle of the drive. On the RowErg a simple rower figure follows your stroke (legs, back, arms
-  on the drive; arms, body, slide on the recovery), timed from the monitor's stroke state and
-  measured drive and recovery times. Choose curve, figure, both or numbers only.
+  middle of the drive. It can be switched to numbers only.
+- **Pieces**: in interval workouts, a table of finished pieces (split, rate, watts, HR, vs target).
+- **Big screens** (1000 px and wider, e.g. a tablet on its side, a laptop or a TV): two columns,
+  with the numbers on the left and the stroke panel and pieces on the right, all scaled up to be
+  readable from the seat.
 - **After**: splits table, FIT download (records, laps with work/rest intensity, session),
   splits CSV, and a short local history.
 

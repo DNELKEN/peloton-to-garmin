@@ -54,26 +54,22 @@ export class Simulator {
     });
   }
 
-  // Rowing machines also report each stroke: phase changes, drive and recovery times, and the
-  // force curve at the end of the drive. Below 75% effort the curve gets a mid-drive dip, so the
+  // Rowing machines also report each stroke: drive and recovery times, and the force curve at the end of the drive. Below 75% effort the curve gets a mid-drive dip, so the
   // technique note can be tried out.
   strokeLoop() {
     const m = MACHINES[this.machine] ?? MACHINES.rower;
     const spm = this.speed > 0.5 && !this.resting ? m.simCadence * (0.85 + 0.15 * this.effort) : 0;
     if (!spm || m.paceUnit !== 500) {
-      this.onData({ strokeState: 0 });
       this.strokeTimer = setTimeout(() => this.strokeLoop(), 500);
       return;
     }
     const cycle = 60 / spm;
     const driveTime = Math.min(0.95, cycle * 0.34);
     const recoveryTime = cycle - driveTime;
-    this.onData({ strokeState: 2 });
     this.strokeTimer = setTimeout(() => {
       const curve = simulatedCurve(this.speed, this.effort);
       this.strokeCount += 1;
       this.onData({
-        strokeState: 4,
         driveLength: Math.round((1.38 + 0.06 * this.effort + (Math.random() - 0.5) * 0.04) * 100) / 100,
         driveTime: Math.round(driveTime * 100) / 100,
         recoveryTime: Math.round(recoveryTime * 100) / 100,

@@ -122,10 +122,6 @@ export class ForceCurveAssembler {
   }
 }
 
-// PM5 stroke states (General Status byte 10): 0 waiting for wheel to reach min speed, 1 waiting
-// for wheel to accelerate, 2 driving, 3 dwelling after drive, 4 recovery.
-export const STROKE_STATE = { driving: 2, dwelling: 3, recovery: 4 };
-
 // PM5 workout states (General Status byte 8). 1-9 are the "in a workout" states: rowing, and
 // the countdown, rest and work phases of intervals. 10 = workout end, 11 = terminated (Menu
 // pressed mid-workout), 12 = logged, 13 = rearm, 0 = waiting to begin.
@@ -148,7 +144,7 @@ export function machineFromName(name = '') {
 export const PM5_HANDLERS = {
   [PM5_UUIDS.generalStatus]: (dv) => {
     const s = parseGeneralStatus(dv);
-    return { distance: s.distance, strokeState: s.strokeState, pmWorkoutType: s.workoutType, pmWorkoutState: s.workoutState };
+    return { distance: s.distance, pmWorkoutType: s.workoutType, pmWorkoutState: s.workoutState };
   },
   [PM5_UUIDS.additionalStatus]: (dv) => {
     const s = parseAdditionalStatus(dv);

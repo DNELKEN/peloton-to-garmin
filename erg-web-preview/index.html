@@ -121,6 +121,7 @@
 
     <!-- ============ WORKOUT ============ -->
     <section id="view-workout" class="view" hidden>
+      <div class="w-main">
       <div class="seg-header">
         <span class="seg-label" id="w-seg-label"></span>
         <span class="seg-next" id="w-next"></span>
@@ -163,15 +164,16 @@
         <div><span class="m-label">Time</span><strong id="w-time">0:00</strong></div>
       </div>
 
+      </div>
+
+      <div class="w-side" id="w-side">
       <section class="stroke-panel" id="w-stroke" hidden aria-label="Stroke">
         <div class="stroke-head">
           <h2>Stroke</h2>
           <label class="stroke-view">
             <span class="visually-hidden">Show</span>
             <select id="stroke-view">
-              <option value="both">Curve and figure</option>
               <option value="curve">Force curve</option>
-              <option value="figure">Figure</option>
               <option value="off">Numbers only</option>
             </select>
           </label>
@@ -181,10 +183,6 @@
             <svg id="w-curve" viewBox="0 0 300 150" role="img" aria-label="Force curve of the last stroke"></svg>
             <figcaption class="hint" id="w-curve-caption">Force through the drive. Faint lines are the strokes before.</figcaption>
           </figure>
-          <figure class="figure-wrap" id="w-figure-wrap">
-            <svg id="w-figure" role="img" aria-label="Rower showing where you are in the stroke"></svg>
-            <figcaption class="phase" id="w-phase">Waiting for the first stroke</figcaption>
-          </figure>
         </div>
         <div class="stroke-stats">
           <div><span class="m-label">Stroke length</span><strong id="w-length">--</strong></div>
@@ -193,6 +191,17 @@
         </div>
         <p class="stroke-hint" id="w-hint" hidden></p>
       </section>
+
+      <section class="pieces-panel" id="w-pieces" hidden aria-label="Pieces so far">
+        <h2>Pieces</h2>
+        <div class="table-wrap">
+          <table class="laps pieces">
+            <thead><tr><th>#</th><th id="w-pieces-pace">/500m</th><th>Rate</th><th>Watts</th><th>HR</th><th>vs target</th></tr></thead>
+            <tbody id="w-pieces-body"></tbody>
+          </table>
+        </div>
+      </section>
+      </div>
 
       <div class="sim-controls" id="sim-controls" hidden>
         <span>Simulator effort</span>
