@@ -8,7 +8,7 @@ import { LogbookClient, LOGBOOK_TYPES, buildLogbookResult } from './logbook.js';
 import { suggestTargets, applyTargets } from './insights.js';
 import { MULTI_MACHINES, SHORT_NAMES, buildCircuit, buildErgathlon, machinesIn, nextLegOn, splitByMachine } from './multi.js';
 import {
-  MACHINES, PRESETS, WorkoutEngine, buildIntervals, formatDistance, formatPace,
+  MACHINES, PRESETS, WorkoutEngine, splitKindOf, splitForSegment, parseSplitText, describeSplit, buildIntervals, formatDistance, formatPace,
   formatTime, machineInfo, parseDuration,
 } from './workout.js';
 
@@ -163,7 +163,37 @@ function selectWorkout(w) {
   setPushStatus('');
   renderPresets();
   renderPlan();
+  renderSplitSetting();
   updateConnectionUi();
+}
+
+// ---------- split setting ----------
+
+// The split box on the Go card. What you type is remembered per workout.
+function renderSplitSetting() {
+  const w = state.workout;
+  const kind = splitKindOf(w);
+  $('#split-row').hidden = !kind;
+  if (!kind) return;
+  const input = $('#split-input');
+  $('#split-label').textContent = kind === 'distance' ? 'Split every (meters)' : kind === 'time' ? 'Split every (m:ss)' : 'Split every (meters, or m:ss)';
+  input.inputMode = kind === 'distance' ? 'numeric' : 'text';
+  const auto = splitForSegment({ ...w, split: null }, w.segments.find((x) => x.type === 'work'));
+  input.placeholder = auto ? `Auto: ${describeSplit(auto)}` : kind === 'time' ? 'e.g. 2:00 (optional)' : 'e.g. 250 (optional)';
+  input.value = settings.splitPrefs?.[w.name] ?? '';
+  const works = w.segments.filter((x) => x.type === 'work').length;
+  $('#split-hint').textContent = works > 1
+    ? 'Each piece is split on this screen and in the FIT file. The PM5 and Logbook keep whole pieces.'
+    : kind === 'either'
+      ? 'Recorded on this screen, in the Logbook and in the FIT file.'
+      : 'Used on the PM5, on this screen, in the Logbook and in the FIT file.';
+  checkSplitInput();
+}
+
+function checkSplitInput() {
+  const { error } = parseSplitText($('#split-input').value, state.workout);
+  $('#split-error').textContent = error ?? '';
+  return !error;
 }
 
 // For a multi-erg workout: one row per machine it uses, each with its own connect buttons.
@@ -570,6 +600,16 @@ function driveSimulators(engine) {
 }
 
 async function startWorkout() {
+  if (!state.workout.multi) {
+    const { split, error } = parseSplitText($('#split-row').hidden ? '' : $('#split-input').value, state.workout);
+    if (error) {
+      setPushStatus(error, 'error');
+      $('#split-input').focus();
+      return;
+    }
+    const { split: _previous, ...workout } = state.workout;
+    state.workout = split ? { ...workout, split } : workout;
+  }
   const multi = !!state.workout.multi;
   if (multi ? machinesIn(state.workout).some((m) => !connFor(m)) : !state.erg) return;
   if (multi && settings.pushToPm5) {
@@ -734,25 +774,42 @@ function trackRepAverages(v, isRest) {
 // Completed work pieces, for interval workouts. Shown in the side column on big screens.
 function renderPieces(e, v, m) {
   const panel = $('#w-pieces');
-  const show = v.works > 1;
+  const hasSplits = e.workout.segments.some((x) => splitForSegment(e.workout, x));
+  const show = v.works > 1 || hasSplits;
   panel.dataset.show = String(show);
   $('#view-workout').dataset.side = show ? 'full' : 'empty';
   if (!show) return;
   const done = e.laps.filter((l) => l.type === 'work');
-  const key = `${done.length}:${v.segIndex}`;
+  const key = `${done.length}:${v.segIndex}:${v.splits.length}`;
   if (state.piecesKey === key) return;
   state.piecesKey = key;
+  $('#w-pieces-title').textContent = hasSplits ? 'Splits' : 'Pieces';
   $('#w-pieces-pace').textContent = e.multi ? 'Split' : `/${m.paceUnit}m`;
-  const rows = done.map((l, i) => {
+  const single = v.works === 1;
+  const row = (label, l, cls = '') => {
     const delta = l.targetPace && l.pace ? l.pace - l.targetPace : null;
-    const cls = delta == null ? '' : delta <= 0 ? 'ahead' : 'behind';
+    const vsCls = delta == null ? '' : delta <= 0 ? 'ahead' : 'behind';
     const vs = delta == null ? '' : `${delta <= 0 ? '−' : '+'}${Math.abs(delta).toFixed(1)}s`;
-    const label = e.multi ? `${i + 1} ${shortName(l.machine)}` : i + 1;
     const pace = e.multi && machineInfo(l.machine).paceUnit !== 500 ? `${formatPace(l.pace)} /1k` : formatPace(l.pace);
-    return `<tr><td>${label}</td><td>${pace}</td><td>${l.avgCadence || '--'}</td><td>${l.avgPower || '--'}</td><td>${l.avgHr ?? '--'}</td><td class="${cls}">${vs}</td></tr>`;
+    return `<tr class="${cls}"><td>${label}</td><td>${pace}</td><td>${l.avgCadence || '--'}</td><td>${l.avgPower || '--'}</td><td>${l.avgHr ?? '--'}</td><td class="${vsCls}">${vs}</td></tr>`;
+  };
+  // Split labels: 1, 2, 3 for a single piece; 2.1, 2.2 for the splits of piece 2.
+  const splitLabel = (piece, k) => (single ? String(k + 1) : `${piece}.${k + 1}`);
+  const rows = [];
+  done.forEach((l, i) => {
+    const multiSplits = l.splits?.length > 1;
+    if (!single) rows.push(row(e.multi ? `${i + 1} ${shortName(l.machine)}` : i + 1, l, multiSplits ? 'piece' : ''));
+    if (multiSplits) l.splits.forEach((sp, k) => rows.push(row(splitLabel(i + 1, k), sp, single ? '' : 'split')));
   });
-  if (v.seg.type === 'work' && done.length < v.works) rows.push(`<tr class="current"><td>${done.length + 1}</td><td colspan="5">in progress</td></tr>`);
+  if (v.seg.type === 'work' && done.length < v.works) {
+    const n = done.length + 1;
+    v.splits.forEach((sp, k) => rows.push(row(splitLabel(n, k), sp, single ? '' : 'split')));
+    const label = v.split ? splitLabel(n, v.splits.length) : n;
+    rows.push(`<tr class="current"><td>${label}</td><td colspan="5">in progress</td></tr>`);
+  }
   $('#w-pieces-body').innerHTML = rows.join('');
+  const wrap = $('#w-pieces-wrap');
+  wrap.scrollTop = wrap.scrollHeight; // keep the newest split in view
 }
 
 // Multi-erg: one chip per machine, so a monitor that fell asleep is spotted before the changeover.
@@ -832,26 +889,43 @@ function renderSummary(s) {
   $('#s-pace-head').textContent = s.multi ? 'Split' : `/${m.paceUnit}m`;
   $('#s-cad-head').textContent = s.multi ? 'Rate' : m.cadenceUnit.toUpperCase();
   let n = 0;
-  $('#s-laps').replaceChildren(...s.laps.map((l) => {
+  const makeRow = (cells, cls) => {
     const tr = document.createElement('tr');
-    const off = l.type !== 'work';
-    if (off) tr.className = 'rest';
-    const unitNote = s.multi && machineInfo(l.machine).paceUnit !== 500 ? ' /1k' : '';
-    const cells = [
-      l.type === 'rest' ? 'rest' : l.type === 'transition' ? 'change' : s.multi ? `${++n} ${shortName(l.machine)}` : String(++n),
-      formatTime(l.duration, true),
-      Math.round(l.distance).toLocaleString('en-US'),
-      off ? '--' : formatPace(l.pace) + unitNote,
-      l.avgPower || '--',
-      off ? '--' : l.avgCadence || '--',
-      l.avgHr ?? '--',
-    ];
+    if (cls) tr.className = cls;
     for (const c of cells) {
       const td = document.createElement('td');
       td.textContent = c;
       tr.append(td);
     }
     return tr;
+  };
+  $('#s-laps').replaceChildren(...s.laps.flatMap((l) => {
+    const off = l.type !== 'work';
+    const unitNote = s.multi && machineInfo(l.machine).paceUnit !== 500 ? ' /1k' : '';
+    const label = l.type === 'rest' ? 'rest' : l.type === 'transition' ? 'change' : s.multi ? `${++n} ${shortName(l.machine)}` : String(++n);
+    const rows = [makeRow([
+      label,
+      formatTime(l.duration, true),
+      Math.round(l.distance).toLocaleString('en-US'),
+      off ? '--' : formatPace(l.pace) + unitNote,
+      l.avgPower || '--',
+      off ? '--' : l.avgCadence || '--',
+      l.avgHr ?? '--',
+    ], off ? 'rest' : '')];
+    if (!off && l.splits?.length > 1) {
+      for (const sp of l.splits) {
+        rows.push(makeRow([
+          `${label}.${sp.index + 1}`,
+          formatTime(sp.duration, true),
+          Math.round(sp.distance).toLocaleString('en-US'),
+          formatPace(sp.pace) + unitNote,
+          sp.avgPower || '--',
+          sp.avgCadence || '--',
+          sp.avgHr ?? '--',
+        ], 'split'));
+      }
+    }
+    return rows;
   }));
 }
 
@@ -1066,6 +1140,13 @@ function init() {
   });
 
   $('#start').addEventListener('click', startWorkout);
+  $('#split-input').addEventListener('input', (ev) => {
+    settings.splitPrefs = { ...settings.splitPrefs, [state.workout.name]: ev.target.value.trim() };
+    store.set(SETTINGS_KEY, settings);
+    setPushStatus('');
+    checkSplitInput();
+  });
+  renderSplitSetting();
   $('#start-now').addEventListener('click', () => state.engine?.startNow(Date.now()));
   $('#end').addEventListener('click', () => {
     const e = state.engine;

@@ -28,7 +28,13 @@ No build step and no dependencies: plain HTML, CSS and JavaScript modules.
   showing how close you are (within 1.5 s is on target), stroke rate, watts and heart rate with
   the piece average (or target watts), rep average, projected finish, beeps at transitions and a
   3-2-1 countdown at the end of rests. The screen stays awake. Calories are on the summary.
-- **Pieces**: in interval workouts, a table of finished pieces (split, rate, watts, HR, vs target).
+- **Splits**: type the split you want on the Go card (meters for distance pieces, e.g. 250, or
+  m:ss for timed pieces, e.g. 2:00); leave it empty for the PM5's default of about five splits on
+  a single piece. During the workout a table shows each finished round with its splits, and the
+  current round's splits so far (pace, rate, watts, HR, vs target). Splits are loaded onto the PM5
+  for single pieces and saved in the Logbook result (single pieces), the FIT file (one lap per
+  split) and the CSV.
+- **Pieces**: in interval workouts without splits, the same table lists finished pieces.
 - **Big screens** (1000 px and wider, e.g. a tablet on its side, a laptop or a TV): two columns,
   with the numbers on the left and the finished pieces on the right, all scaled up to be
   readable from the seat.

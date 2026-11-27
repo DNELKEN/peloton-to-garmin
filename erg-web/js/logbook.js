@@ -118,7 +118,9 @@ export function buildLogbookResult(summary, workout, { weightClass = 'H', timeZo
     const distance = Math.round(single ? laps[0].distance : summary.totalDistance);
     const kind = partial || segs[0].kind === 'open' ? 'JustRow' : segs[0].kind === 'distance' ? 'FixedDistanceSplits' : 'FixedTimeSplits';
     const lap = single ? laps[0] : { duration: summary.elapsed, distance: summary.totalDistance };
-    const by = kind === 'JustRow' ? { kind: 'time', value: 300 } : splitFor(segs[0]);
+    // The split the rower chose (as recorded during the workout), else the PM5 default.
+    const chosen = workout.split && (workout.split.kind === segs[0].kind || segs[0].kind === 'open') ? workout.split : null;
+    const by = chosen ?? (kind === 'JustRow' ? { kind: 'time', value: 300 } : splitFor(segs[0]));
     return {
       ...base,
       workout_type: kind,

@@ -1,5 +1,7 @@
 // Workout definitions, formatting helpers and the engine that tracks a workout in progress.
 
+import { splitFor } from './pm5-workouts.js';
+
 const cubicWatts = (speed) => (speed > 0 ? 2.8 * speed ** 3 : 0);
 
 // FIT sport / sub-sport codes: rowing=15/indoor_rowing=14, cycling=2/indoor_cycling=6,
@@ -82,6 +84,65 @@ export const PRESETS = [
 const STALE_DATA_MS = 3000;
 const STALE_HR_MS = 5000;
 const MAX_DISTANCE_JUMP = 200; // metres; bigger jumps mean the monitor was reset
+
+// The split recorded inside a work piece: the workout's own `split` (set by the rower) when it
+// fits the piece, otherwise the PM5's default for a single piece (about five splits), or none.
+// A split only applies to pieces of its own kind, or to an open "just row" piece.
+export function splitForSegment(workout, seg) {
+  if (!seg || seg.type !== 'work' || workout.multi) return null;
+  const sp = workout.split;
+  if (sp) return seg.kind === sp.kind || seg.kind === 'open' ? sp : null;
+  const single = workout.segments.filter((x) => x.type === 'work').length === 1;
+  return single && (seg.kind === 'distance' || seg.kind === 'time') ? splitFor(seg) : null;
+}
+
+// Which kind of split a workout can take: 'distance' or 'time' when all its pieces are that kind,
+// 'either' for a just-row piece, or null (mixed pieces, multi-erg) when it can't take one.
+export function splitKindOf(workout) {
+  if (workout.multi) return null;
+  const kinds = new Set(workout.segments.filter((x) => x.type === 'work').map((x) => x.kind));
+  if (kinds.size !== 1) return null;
+  const [kind] = kinds;
+  return kind === 'open' ? 'either' : kind;
+}
+
+export const describeSplit = (sp) => (sp.kind === 'distance' ? `${sp.value.toLocaleString('en-US')} m` : formatTime(sp.value));
+
+// Read what the rower typed as a split: meters for distance pieces ("250" or "250m"), m:ss for
+// timed pieces ("2:00", or plain seconds). For a just-row piece, m:ss means time and a plain number
+// means meters. Empty means automatic. Returns { split } (null = automatic) or { error }.
+export function parseSplitText(text, workout) {
+  const kind = splitKindOf(workout);
+  const t = String(text ?? '').trim().toLowerCase().replace(/\s+/g, '');
+  if (!kind || !t) return { split: null };
+  const k = kind === 'either' ? (t.includes(':') ? 'time' : 'distance') : kind;
+  const value = k === 'distance' ? Number(t.replace(/m$/, '')) : parseDuration(t.replace(/s$/, ''));
+  if (!Number.isFinite(value) || value <= 0) {
+    return { error: k === 'distance' ? 'Enter the split in meters, for example 250.' : 'Enter the split as m:ss, for example 2:00.' };
+  }
+  if (k === 'distance' && value < 100) return { error: 'Splits need to be at least 100 m.' };
+  if (k === 'time' && value < 20) return { error: 'Splits need to be at least 0:20.' };
+  const split = { kind: k, value: k === 'distance' ? Math.round(value) : Math.round(value * 10) / 10 };
+  const pieces = workout.segments.filter((x) => x.type === 'work' && x.kind === k).map((x) => x.value);
+  if (pieces.length && split.value >= Math.min(...pieces)) {
+    return { error: `The split must be shorter than the piece (${describeSplit({ kind: k, value: Math.min(...pieces) })}).` };
+  }
+  return { split };
+}
+
+// Averages over one accumulator, shared by pieces and splits.
+function stats(a) {
+  return {
+    maxSpeed: a.maxSpeed,
+    avgPower: a.time ? Math.round(a.power / a.time) : 0,
+    maxPower: Math.round(a.maxPower),
+    avgCadence: a.movingTime ? Math.round(a.cadence / a.movingTime) : 0,
+    avgHr: a.hrTime ? Math.round(a.hr / a.hrTime) : null,
+    maxHr: a.maxHr || null,
+    calories: Math.round(a.calories),
+    cycles: Math.round(a.cycles),
+  };
+}
 
 const newAcc = () => ({ time: 0, movingTime: 0, power: 0, cadence: 0, hr: 0, hrTime: 0, maxHr: 0, maxPower: 0, maxSpeed: 0, calories: 0, cycles: 0 });
 
@@ -185,6 +246,13 @@ export class WorkoutEngine {
       this.samples.push({ t: now, distance: this.totalDistance, speed: this.live.speed, power: this.live.power, cadence: this.live.cadence, heartRate: this.live.heartRate });
     }
 
+    if (this.split?.kind === 'time') {
+      const end = this.segmentEnd().time;
+      for (let mark = this.splitStartTime + this.split.value * 1000; mark < end - 1 && now >= mark; mark = this.splitStartTime + this.split.value * 1000) {
+        this.closeSplit(mark, this.totalDistance);
+      }
+    }
+
     const seg = this.segment;
     if (seg.kind === 'time' && now - this.segStartTime >= seg.value * 1000) this.completeSegment(this.segStartTime + seg.value * 1000);
   }
@@ -212,13 +280,54 @@ export class WorkoutEngine {
     this.lastDistanceAt = now;
     this.segStartTime = now;
     this.segStartDistance = this.totalDistance;
+    this.startSplits(now);
     this.onSegmentChange(this.segment, 0);
+  }
+
+  // ---- splits inside a piece ----
+
+  startSplits(at) {
+    this.split = splitForSegment(this.workout, this.segment);
+    this.splits = [];
+    this.splitStartTime = at;
+    this.splitStartDistance = this.segStartDistance;
+    this.splitAcc = newAcc();
+  }
+
+  closeSplit(endTime, endDistance, partial = false) {
+    const duration = Math.max(0, (endTime - this.splitStartTime) / 1000);
+    const distance = Math.max(0, endDistance - this.splitStartDistance);
+    const seg = this.segment;
+    this.splits.push({
+      index: this.splits.length,
+      partial,
+      startTime: this.splitStartTime,
+      endTime,
+      duration,
+      distance,
+      pace: distance > 0 ? (duration / distance) * this.unitOf(seg) : null,
+      avgSpeed: duration > 0 ? distance / duration : 0,
+      targetPace: seg.targetPace ?? null,
+      ...stats(this.splitAcc),
+    });
+    this.splitStartTime = endTime;
+    this.splitStartDistance = endDistance;
+    this.splitAcc = newAcc();
+  }
+
+  // Where the piece itself ends, so the last split closes with the piece rather than on its own.
+  segmentEnd() {
+    const seg = this.segment;
+    return {
+      distance: seg.kind === 'distance' ? this.segStartDistance + seg.value : Infinity,
+      time: seg.kind === 'time' ? this.segStartTime + seg.value * 1000 : Infinity,
+    };
   }
 
   accumulate(dt) {
     const { speed, cadence, power, heartRate } = this.live;
     const kcal = power > 0 ? ((4 * power + 300) / 3600) * dt : 0; // Concept2 calorie formula
-    for (const a of [this.acc, this.total]) {
+    for (const a of this.split ? [this.acc, this.total, this.splitAcc] : [this.acc, this.total]) {
       a.time += dt;
       a.power += power * dt;
       if (speed > 0) { a.movingTime += dt; a.cadence += cadence * dt; }
@@ -234,6 +343,13 @@ export class WorkoutEngine {
   addDistance(d, now) {
     const before = this.totalDistance;
     this.totalDistance += d;
+    if (this.split?.kind === 'distance') {
+      const end = this.segmentEnd().distance;
+      for (let mark = this.splitStartDistance + this.split.value; mark < end - 0.01 && this.totalDistance >= mark; mark = this.splitStartDistance + this.split.value) {
+        const at = this.lastDistanceAt + ((mark - before) / d) * (now - this.lastDistanceAt);
+        this.closeSplit(at, mark);
+      }
+    }
     const seg = this.segment;
     if (seg.kind === 'distance') {
       const target = this.segStartDistance + seg.value;
@@ -254,6 +370,11 @@ export class WorkoutEngine {
     const a = this.acc;
     const duration = Math.max(0, (endTime - this.segStartTime) / 1000);
     const distance = Math.max(0, endDistance - this.segStartDistance);
+    let splits = null;
+    if (this.split) {
+      if (endTime > this.splitStartTime) this.closeSplit(endTime, endDistance, partial);
+      splits = this.splits;
+    }
     this.laps.push({
       index: this.laps.length,
       type: seg.type,
@@ -268,14 +389,8 @@ export class WorkoutEngine {
       distance,
       pace: distance > 0 && seg.type !== 'transition' ? (duration / distance) * this.unitOf(seg) : null,
       avgSpeed: duration > 0 ? distance / duration : 0,
-      maxSpeed: a.maxSpeed,
-      avgPower: a.time ? Math.round(a.power / a.time) : 0,
-      maxPower: Math.round(a.maxPower),
-      avgCadence: a.movingTime ? Math.round(a.cadence / a.movingTime) : 0,
-      avgHr: a.hrTime ? Math.round(a.hr / a.hrTime) : null,
-      maxHr: a.maxHr || null,
-      calories: Math.round(a.calories),
-      cycles: Math.round(a.cycles),
+      ...stats(a),
+      splits,
     });
     this.acc = newAcc();
     this.segIndex++;
@@ -284,6 +399,7 @@ export class WorkoutEngine {
     } else {
       this.segStartTime = endTime;
       this.segStartDistance = endDistance;
+      this.startSplits(endTime);
       // New machine: forget the last one's speed, rate and power (heart rate carries over).
       if (this.multi && this.machineOf(this.workout.segments[this.segIndex - 1]) !== this.machineOf(this.segment)) {
         Object.assign(this.live, { speed: 0, cadence: 0, power: 0 });
@@ -308,6 +424,7 @@ export class WorkoutEngine {
       name: this.workout.name,
       multi: this.multi,
       plan: this.workout.plan ?? null,
+      split: this.workout.split ?? null,
       machine: this.machine,
       startTime: this.startTime,
       endTime: this.endTime,
@@ -378,6 +495,8 @@ export class WorkoutEngine {
       totalDistance: this.totalDistance,
       totalElapsed: running ? (now - this.startTime) / 1000 : 0,
       calories: this.calories,
+      split: running ? this.split : splitForSegment(this.workout, seg),
+      splits: running && this.split ? this.splits : [],
     };
   }
 }

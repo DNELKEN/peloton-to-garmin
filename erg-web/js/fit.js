@@ -139,7 +139,12 @@ export function encodeFit(summary, { device = 'generic' } = {}) {
   // changing machines as transition sessions in between.
   const sportOf = (l) => (l.type === 'transition' ? { sport: 3, subSport: 0 } : summary.multi ? machineInfo(l.machine) : { sport, subSport });
 
-  summary.laps.forEach((l, i) => {
+  // A piece recorded with splits becomes one lap per split, so Garmin and Strava show the splits.
+  const fitLaps = summary.multi ? summary.laps : summary.laps.flatMap((l) => (l.type === 'work' && l.splits?.length > 1
+    ? l.splits.map((sp) => ({ ...sp, type: 'work', kind: summary.split?.kind ?? l.kind, machine: l.machine, partial: sp.partial }))
+    : [l]));
+
+  fitLaps.forEach((l, i) => {
     const ls = sportOf(l);
     w.write('lap', {
       message_index: i, timestamp: toFitTime(l.endTime), event: 9, event_type: 1, start_time: toFitTime(l.startTime),
@@ -169,7 +174,7 @@ export function encodeFit(summary, { device = 'generic' } = {}) {
       total_elapsed_time: summary.elapsed, total_timer_time: summary.elapsed, total_distance: summary.totalDistance, total_cycles: summary.cycles,
       total_calories: summary.calories, avg_speed: summary.elapsed > 0 ? summary.totalDistance / summary.elapsed : 0, max_speed: summary.maxSpeed,
       avg_heart_rate: summary.avgHr, max_heart_rate: summary.maxHr, avg_cadence: n(summary.avgCadence), avg_power: n(summary.avgPower), max_power: n(summary.maxPower),
-      first_lap_index: 0, num_laps: summary.laps.length, trigger: 0,
+      first_lap_index: 0, num_laps: fitLaps.length, trigger: 0,
     });
   }
 
@@ -193,6 +198,11 @@ export function lapsToCsv(summary) {
   const rows = [['lap', 'type', 'duration_s', 'distance_m', `pace_s_per_${unit}m`, 'avg_watts', 'avg_cadence', 'avg_hr', 'max_hr', 'calories']];
   for (const l of summary.laps) {
     rows.push([l.index + 1, l.type, l.duration.toFixed(1), l.distance.toFixed(1), l.pace?.toFixed(1) ?? '', l.avgPower, l.avgCadence, l.avgHr ?? '', l.maxHr ?? '', l.calories]);
+    if (l.splits?.length > 1) {
+      for (const sp of l.splits) {
+        rows.push([`${l.index + 1}.${sp.index + 1}`, 'split', sp.duration.toFixed(1), sp.distance.toFixed(1), sp.pace?.toFixed(1) ?? '', sp.avgPower, sp.avgCadence, sp.avgHr ?? '', sp.maxHr ?? '', sp.calories]);
+      }
+    }
   }
   return rows.map((r) => r.join(',')).join('\n') + '\n';
 }

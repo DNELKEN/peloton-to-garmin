@@ -115,6 +115,14 @@
       <div class="card">
         <h2><span class="step">3</span> Go</h2>
         <p class="selected">Selected: <strong id="selected-name"></strong></p>
+        <div class="split-setting" id="split-row" hidden>
+          <label class="field">
+            <span id="split-label">Split every</span>
+            <input id="split-input" type="text" autocomplete="off" spellcheck="false">
+          </label>
+          <p class="hint" id="split-hint"></p>
+          <p class="form-error" id="split-error" role="alert"></p>
+        </div>
         <div class="suggest" id="suggest" hidden>
           <p class="suggest-head">Suggested from your Logbook</p>
           <p class="suggest-main" id="suggest-main"></p>
@@ -214,8 +222,8 @@
 
       <div class="w-side" id="w-side">
       <section class="pieces-panel" id="w-pieces" aria-label="Pieces so far">
-        <h2>Pieces</h2>
-        <div class="table-wrap">
+        <h2 id="w-pieces-title">Pieces</h2>
+        <div class="table-wrap" id="w-pieces-wrap">
           <table class="laps pieces">
             <thead><tr><th>#</th><th id="w-pieces-pace">/500m</th><th>Rate</th><th>Watts</th><th>HR</th><th>vs target</th></tr></thead>
             <tbody id="w-pieces-body"></tbody>

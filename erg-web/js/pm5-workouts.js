@@ -65,7 +65,7 @@ export function workoutToFrames(workout, { sendTargets = true } = {}) {
       frames: [
         pmConfig(cmd(CMD.workoutType, [type]), cmd(CMD.workoutDuration, duration(seg))),
         pmConfig(
-          cmd(CMD.splitDuration, duration(splitFor(seg))),
+          cmd(CMD.splitDuration, duration(workout.split?.kind === seg.kind ? workout.split : splitFor(seg))),
           cmd(CMD.configureWorkout, [1]),
           cmd(CMD.screenState, [SCREEN_WORKOUT, SCREEN_PREPARE_TO_ROW]),
         ),
