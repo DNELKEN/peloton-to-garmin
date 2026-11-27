@@ -5,6 +5,7 @@ import { Simulator } from './simulator.js';
 import { encodeFit, lapsToCsv, FIT_DEVICES } from './fit.js';
 import { PLANS, planDays, planWorkout, nextDay, recordPlanResult } from './plans.js';
 import { LogbookClient, LOGBOOK_TYPES, buildLogbookResult } from './logbook.js';
+import { StrokeTracker } from './stroke.js';
 import {
   MACHINES, PRESETS, WorkoutEngine, buildIntervals, formatDistance, formatPace,
   formatTime, machineInfo, parseDuration,
@@ -25,7 +26,7 @@ const store = {
   },
 };
 
-const settings = { machine: 'rower', fitDevice: 'generic', pushToPm5: true, ...store.get(SETTINGS_KEY, {}) };
+const settings = { machine: 'rower', fitDevice: 'generic', pushToPm5: true, strokeView: 'curve', ...store.get(SETTINGS_KEY, {}) };
 let planProgress = store.get(PLAN_KEY, {});
 const logbook = new LogbookClient();
 
@@ -39,6 +40,8 @@ const state = {
   wakeLock: null,
   summary: null,
   lastCountdownBeep: null,
+  stroke: null, // StrokeTracker while a workout runs
+  rep: null, // running averages for the current piece
 };
 
 // ---------- sound ----------
@@ -217,7 +220,7 @@ function renderMachineSelect() {
 function updateUnitLabels() {
   const m = machineInfo(settings.machine);
   $('#target-label').textContent = `Target pace /${m.paceUnit}m (optional)`;
-  $('#w-pace-label').textContent = `Pace /${m.paceUnit}m`;
+  $('#w-pace-label').textContent = `Split /${m.paceUnit}m`;
   $('#w-cad-label').textContent = m.cadenceUnit === 'rpm' ? 'Cadence' : 'Stroke rate';
 }
 
@@ -245,6 +248,7 @@ function onErgData(update) {
   if (state.hr) delete update.heartRate; // a dedicated strap wins over the erg's own HR
   Object.assign(state.live, update);
   state.engine?.ingest(update, Date.now());
+  state.stroke?.ingest(update);
   if (!state.engine) renderLivePreview();
 }
 
@@ -350,6 +354,9 @@ async function startWorkout() {
   if (state.erg.kind === 'sim') state.erg.device.setResting(false);
   $('#sim-controls').hidden = state.erg.kind !== 'sim';
   renderSimEffort();
+  state.rep = null;
+  state.piecesKey = null;
+  setupStrokePanel();
   show('workout');
   state.timer = setInterval(renderWorkout, 200);
   renderWorkout();
@@ -384,10 +391,10 @@ function renderWorkout() {
     caption.textContent = 'Start moving to begin, or tap Start now';
   } else if (v.seg.kind === 'distance') {
     hero.textContent = Math.ceil(v.remaining).toLocaleString('en-US');
-    caption.textContent = `metres to go · ${formatTime(v.segElapsed)} elapsed${v.projected ? ` · projected ${formatTime(v.projected, true)}` : ''}`;
+    caption.textContent = `metres to go · ${formatTime(v.segElapsed)} elapsed`;
   } else if (v.seg.kind === 'time') {
     hero.textContent = formatTime(Math.ceil(v.remaining));
-    caption.textContent = isRest ? 'rest remaining' : `remaining · ${formatDistance(v.segDistance)} · projected ${formatDistance(v.projected)}`;
+    caption.textContent = isRest ? 'rest remaining' : `remaining · ${formatDistance(v.segDistance)}`;
   } else {
     hero.textContent = formatTime(v.segElapsed);
     caption.textContent = formatDistance(v.segDistance);
@@ -403,23 +410,173 @@ function renderWorkout() {
     }
   }
 
-  const target = $('#w-target');
-  target.hidden = v.targetDelta == null || isRest;
-  if (v.targetDelta != null) {
-    const ahead = v.targetDelta <= 0;
-    target.dataset.state = ahead ? 'ahead' : 'behind';
-    target.textContent = `Target ${formatPace(v.seg.targetPace)} · ${Math.abs(v.targetDelta).toFixed(1)}s ${ahead ? 'ahead' : 'behind'} per ${m.paceUnit}m`;
-  }
+  renderPacePanel(v, m, isRest);
+  const avg = trackRepAverages(v, isRest);
+  const targetWatts = !isRest && v.seg.targetPace ? Math.round(m.watts(m.paceUnit / v.seg.targetPace)) : null;
 
-  $('#w-pace').textContent = formatPace(v.pace);
-  $('#w-seg-pace').textContent = formatPace(v.segPace);
   $('#w-cadence').textContent = v.cadence ? Math.round(v.cadence) : '--';
   $('#w-power').textContent = v.power ? Math.round(v.power) : '--';
   $('#w-hr').textContent = v.heartRate ?? '--';
-  $('#w-cal').textContent = Math.round(v.calories);
+  $('#w-cadence-sub').textContent = avg.cadence ? `avg ${Math.round(avg.cadence)}` : '';
+  $('#w-power-sub').textContent = targetWatts ? `target ${targetWatts}` : avg.power ? `avg ${Math.round(avg.power)}` : '';
+  $('#w-hr-sub').textContent = avg.heartRate ? `avg ${Math.round(avg.heartRate)}` : '';
+
+  $('#w-seg-pace').textContent = formatPace(v.segPace);
+  const proj = !isRest && v.state === 'running' && v.projected ? v.projected : null;
+  $('#w-proj-label').textContent = v.seg.kind === 'time' ? 'Projected' : 'Finish';
+  $('#w-proj').textContent = proj == null || v.seg.kind === 'open' ? '--'
+    : v.seg.kind === 'distance' ? formatTime(proj, true) : formatDistance(proj);
   $('#w-dist').textContent = formatDistance(v.totalDistance);
   $('#w-time').textContent = formatTime(v.totalElapsed);
+  renderStrokePanel();
+  renderPieces(e, v, m);
   $('#start-now').hidden = v.state !== 'armed';
+}
+
+// How far the live split can be from the target before the band marker pins to the edge (s).
+const BAND_RANGE = 3;
+const BAND_ON_TARGET = 1.5;
+
+function renderPacePanel(v, m, isRest) {
+  const panel = $('#w-pace-panel');
+  $('#w-pace').textContent = formatPace(v.pace);
+  const target = isRest ? null : v.seg.targetPace;
+  const band = $('#w-band');
+  if (!target) {
+    $('#w-target-label').textContent = 'Rep average';
+    $('#w-target-value').textContent = formatPace(v.segPace);
+    $('#w-target-delta').textContent = '';
+    band.hidden = true;
+    delete panel.dataset.state;
+    return;
+  }
+  $('#w-target-label').textContent = 'Target';
+  $('#w-target-value').textContent = formatPace(target);
+  band.hidden = false;
+  if (v.pace == null) {
+    $('#w-target-delta').textContent = '';
+    $('#w-band-marker').style.left = '50%';
+    delete panel.dataset.state;
+    return;
+  }
+  const delta = v.pace - target; // positive = slower than target
+  const shown = Math.abs(delta) < 0.05 ? 'on target' : `${Math.abs(delta).toFixed(1)}s ${delta < 0 ? 'faster' : 'slower'}`;
+  $('#w-target-delta').textContent = shown;
+  panel.dataset.state = Math.abs(delta) <= BAND_ON_TARGET ? 'on' : delta < 0 ? 'fast' : 'slow';
+  const pos = 50 + Math.max(-1, Math.min(1, delta / BAND_RANGE)) * 50;
+  $('#w-band-marker').style.left = `${pos}%`;
+}
+
+// Average stroke rate, watts and heart rate over the current piece, sampled as the screen updates.
+function trackRepAverages(v, isRest) {
+  if (!state.rep || state.rep.segIndex !== v.segIndex) state.rep = { segIndex: v.segIndex, sums: {}, counts: {} };
+  const r = state.rep;
+  if (!isRest && v.state === 'running') {
+    for (const key of ['cadence', 'power', 'heartRate']) {
+      if (v[key] > 0) { r.sums[key] = (r.sums[key] ?? 0) + v[key]; r.counts[key] = (r.counts[key] ?? 0) + 1; }
+    }
+  }
+  return Object.fromEntries(['cadence', 'power', 'heartRate'].map((k) => [k, r.counts[k] ? r.sums[k] / r.counts[k] : null]));
+}
+
+// Completed work pieces, for interval workouts. Shown in the side column on big screens.
+function renderPieces(e, v, m) {
+  const panel = $('#w-pieces');
+  const show = v.works > 1;
+  panel.dataset.show = String(show);
+  $('#view-workout').dataset.side = show || !$('#w-stroke').hidden ? 'full' : 'empty';
+  if (!show) return;
+  const done = e.laps.filter((l) => l.type === 'work');
+  const key = `${done.length}:${v.segIndex}`;
+  if (state.piecesKey === key) return;
+  state.piecesKey = key;
+  $('#w-pieces-pace').textContent = `/${m.paceUnit}m`;
+  const rows = done.map((l, i) => {
+    const delta = l.targetPace && l.pace ? l.pace - l.targetPace : null;
+    const cls = delta == null ? '' : delta <= 0 ? 'ahead' : 'behind';
+    const vs = delta == null ? '' : `${delta <= 0 ? '−' : '+'}${Math.abs(delta).toFixed(1)}s`;
+    return `<tr><td>${i + 1}</td><td>${formatPace(l.pace)}</td><td>${l.avgCadence || '--'}</td><td>${l.avgPower || '--'}</td><td>${l.avgHr ?? '--'}</td><td class="${cls}">${vs}</td></tr>`;
+  });
+  if (v.seg.type === 'work' && done.length < v.works) rows.push(`<tr class="current"><td>${done.length + 1}</td><td colspan="5">in progress</td></tr>`);
+  $('#w-pieces-body').innerHTML = rows.join('');
+}
+
+// ---------- stroke panel: force curve and stroke numbers ----------
+
+function setupStrokePanel() {
+  const kind = state.erg?.kind;
+  const hasStrokes = (kind === 'pm5' || kind === 'sim') && machineInfo(settings.machine).paceUnit === 500;
+  state.stroke = hasStrokes ? new StrokeTracker() : null;
+  $('#w-stroke').hidden = !hasStrokes;
+  if (!hasStrokes) return;
+  if (settings.strokeView !== 'off') settings.strokeView = 'curve'; // older saved choices
+  $('#stroke-view').value = settings.strokeView;
+  $('#w-stroke-body').dataset.view = settings.strokeView;
+  drawForceCurve($('#w-curve'), []);
+  for (const id of ['#w-length', '#w-peak', '#w-ratio']) $(id).textContent = '--';
+  $('#w-hint').hidden = true;
+  state.strokeDrawn = -1;
+}
+
+// Redrawn from the screen update loop, only when a new stroke has arrived.
+function renderStrokePanel() {
+  const tracker = state.stroke;
+  if (!tracker || tracker.version === state.strokeDrawn) return;
+  state.strokeDrawn = tracker.version;
+  renderStrokeNumbers(tracker);
+}
+
+function renderStrokeNumbers(tracker) {
+  const s = tracker.stroke;
+  if (s) {
+    $('#w-length').textContent = s.driveLength ? `${s.driveLength.toFixed(2)} m` : '--';
+    $('#w-peak').textContent = s.peakForce ? `${Math.round(s.peakForce)} lb` : '--';
+    $('#w-ratio').textContent = tracker.ratio ? `1 : ${tracker.ratio.toFixed(1)}` : '--';
+  }
+  drawForceCurve($('#w-curve'), tracker.curves);
+  const hint = tracker.hint;
+  $('#w-hint').hidden = !hint;
+  $('#w-hint').textContent = hint?.text ?? '';
+}
+
+// Force through the drive for the latest stroke, with the few before it drawn faint behind.
+function drawForceCurve(svg, curves) {
+  const W = 300;
+  const H = 150;
+  const left = 34;
+  const right = 292;
+  const top = 24;
+  const bottom = 132;
+  if (!curves.length) {
+    svg.innerHTML = `<text class="curve-empty" x="${W / 2}" y="${H / 2}" text-anchor="middle">Force curve appears after your first stroke</text>`;
+    return;
+  }
+  const peak = Math.max(...curves.flat());
+  const step = peak > 300 ? 100 : 50;
+  const yMax = Math.max(step, Math.ceil(peak / step) * step);
+  const x = (i, n) => left + (i / (n - 1)) * (right - left);
+  const y = (f) => bottom - (f / yMax) * (bottom - top);
+  const line = (c) => c.map((f, i) => `${x(i, c.length).toFixed(1)},${y(f).toFixed(1)}`).join(' ');
+
+  let out = '';
+  for (let g = 0; g <= yMax; g += step) {
+    out += `<line class="curve-grid" x1="${left}" x2="${right}" y1="${y(g)}" y2="${y(g)}"/>`;
+    out += `<text class="curve-axis" x="${left - 6}" y="${y(g) + 3}" text-anchor="end">${g}</text>`;
+  }
+  out += `<text class="curve-axis" x="${left}" y="${H - 2}">catch</text><text class="curve-axis" x="${right}" y="${H - 2}" text-anchor="end">finish</text>`;
+  out += `<text class="curve-axis" x="${left - 6}" y="10" text-anchor="end">lb</text>`;
+  const older = curves.slice(0, -1);
+  older.forEach((c, i) => {
+    out += `<polyline class="curve-old" style="opacity:${(0.15 + (0.3 * (i + 1)) / older.length).toFixed(2)}" points="${line(c)}"/>`;
+  });
+  const latest = curves.at(-1);
+  out += `<polyline class="curve-new" points="${line(latest)}"/>`;
+  const pi = latest.indexOf(Math.max(...latest));
+  const px = x(pi, latest.length);
+  const py = y(latest[pi]);
+  out += `<circle class="curve-peak" r="4.5" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}"/>`;
+  out += `<text class="curve-axis" x="${px.toFixed(1)}" y="${(py - 8).toFixed(1)}" text-anchor="middle">${Math.round(latest[pi])}</text>`;
+  svg.innerHTML = out;
 }
 
 function renderSimEffort() {
@@ -431,6 +588,7 @@ function stopWorkoutLoop() {
   clearInterval(state.timer);
   state.timer = null;
   state.engine = null;
+  state.stroke = null;
   state.wakeLock?.release?.().catch(() => {});
   state.wakeLock = null;
 }
@@ -618,6 +776,11 @@ function init() {
 
   for (const btn of document.querySelectorAll('[data-connect]')) btn.addEventListener('click', () => connect(btn.dataset.connect));
   $('#machine').addEventListener('change', (e) => setMachine(e.target.value));
+  $('#stroke-view').addEventListener('change', (e) => {
+    settings.strokeView = e.target.value;
+    store.set(SETTINGS_KEY, settings);
+    $('#w-stroke-body').dataset.view = settings.strokeView;
+  });
   $('#fit-device').addEventListener('change', (e) => { settings.fitDevice = e.target.value; store.set(SETTINGS_KEY, settings); });
 
   const form = $('#custom-form');

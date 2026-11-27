@@ -24,9 +24,18 @@ No build step and no dependencies: plain HTML, CSS and JavaScript modules.
 - **The Pete Plan**: the three-week cycle from Pete's published plan, with next-session tracking,
   configurable steady/hard distances, and Pete's pacing rule built in: your average on a session
   becomes the target for every rep but the last next time.
-- **During the workout**: remaining metres/time, live pace, split average, stroke rate/cadence,
-  watts, heart rate, calories, projected finish, ahead/behind target, beeps at transitions and
-  a 3-2-1 countdown at the end of rests. The screen stays awake.
+- **During the workout**: remaining metres/time, the live split next to your target with a band
+  showing how close you are (within 1.5 s is on target), stroke rate, watts and heart rate with
+  the piece average (or target watts), rep average, projected finish, beeps at transitions and a
+  3-2-1 countdown at the end of rests. The screen stays awake. Calories are on the summary.
+- **Stroke panel** (PM5 and simulator, RowErg and SkiErg): the force curve of each stroke with
+  the last few drawn faint behind it, stroke length, peak force, drive : recovery ratio, and a
+  technique note when three strokes in a row show a late peak, a very early peak or a dip in the
+  middle of the drive. It can be switched to numbers only.
+- **Pieces**: in interval workouts, a table of finished pieces (split, rate, watts, HR, vs target).
+- **Big screens** (1000 px and wider, e.g. a tablet on its side, a laptop or a TV): two columns,
+  with the numbers on the left and the stroke panel and pieces on the right, all scaled up to be
+  readable from the seat.
 - **After**: splits table, FIT download (records, laps with work/rest intensity, session),
   splits CSV, and a short local history.
 
@@ -94,4 +103,5 @@ encoder's header and CRCs.
 - PM5 command sequences follow those used by the open-source ErgometerJS library over Web
   Bluetooth; each message fits in one 20-byte Bluetooth packet.
 - Plan progress, targets and history are stored in this browser only.
-- Not yet: the 24-week Beginner Pete Plan, force curves.
+- Not yet: the 24-week Beginner Pete Plan.
+- The simulator's force curve gets a mid-drive dip below 75% effort, so the technique note can be tried without an erg.
