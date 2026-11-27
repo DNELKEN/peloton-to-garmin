@@ -19,7 +19,6 @@ export const PM5_UUIDS = {
   sampleRate: pmUuid('0034'),
   strokeData: pmUuid('0035'),
   additionalStrokeData: pmUuid('0036'),
-  forceCurve: pmUuid('003d'),
 };
 
 // 0x0031 General Status
@@ -85,43 +84,6 @@ export function parseAdditionalStrokeData(dv) {
   };
 }
 
-// 0x003D Force Curve. One stroke's curve arrives over several notifications. Byte 0: high nibble
-// = notifications for this stroke, low nibble = 16-bit force words in this one. Byte 1 = sequence
-// number. Then the words, little-endian, in lbs. Feed every notification to push(); it returns the
-// whole curve once the last piece is in, and null otherwise.
-export class ForceCurveAssembler {
-  constructor() {
-    this.reset();
-  }
-
-  reset() {
-    this.points = [];
-    this.received = 0;
-    this.expected = 0;
-    this.lastSeq = null;
-  }
-
-  push(dv) {
-    const head = u8(dv, 0);
-    const packets = head >> 4;
-    const words = head & 0x0f;
-    const seq = u8(dv, 1);
-    if (!packets || 2 + words * 2 > dv.byteLength) { this.reset(); return null; }
-    // A dropped or out-of-order packet spoils this stroke; start over from the next one.
-    const gap = this.lastSeq != null && seq !== ((this.lastSeq + 1) & 0xff);
-    if (this.received && (gap || packets !== this.expected)) this.reset();
-    this.lastSeq = seq;
-    this.expected = packets;
-    for (let i = 0; i < words; i++) this.points.push(u16(dv, 2 + i * 2));
-    this.received += 1;
-    if (this.received < this.expected) return null;
-    const curve = this.points;
-    this.reset();
-    this.lastSeq = seq;
-    return curve.length >= 3 ? curve : null;
-  }
-}
-
 // PM5 workout states (General Status byte 8). 1-9 are the "in a workout" states: rowing, and
 // the countdown, rest and work phases of intervals. 10 = workout end, 11 = terminated (Menu
 // pressed mid-workout), 12 = logged, 13 = rearm, 0 = waiting to begin.
@@ -151,26 +113,12 @@ export const PM5_HANDLERS = {
     return { speed: s.speed, cadence: s.strokeRate, heartRate: s.heartRate };
   },
   [PM5_UUIDS.additionalStrokeData]: (dv) => ({ power: parseAdditionalStrokeData(dv).power }),
-  // Once per stroke, at the end of the drive.
-  [PM5_UUIDS.strokeData]: (dv) => {
-    const s = parseStrokeData(dv);
-    return {
-      driveLength: s.driveLength,
-      driveTime: s.driveTime,
-      recoveryTime: s.recoveryTime,
-      peakForce: s.peakForce,
-      avgForce: s.avgForce,
-      strokeCount: s.strokeCount,
-    };
-  },
 };
 
 const PM5_RECONNECT_MS = 3000;
 const PM5_KEEPALIVE_MS = 60000;
 const CSAFE_GET_STATUS = 0x80; // public short command: returns the monitor's state
 
-// Older monitor firmware may not offer these; the workout still runs without them.
-const OPTIONAL = new Set([PM5_UUIDS.strokeData, PM5_UUIDS.forceCurve]);
 
 export class PM5Device {
   constructor({ onData, onDisconnect, onWorkoutEnd }) {
@@ -178,7 +126,6 @@ export class PM5Device {
     this.onDisconnect = onDisconnect;
     this.onWorkoutEnd = onWorkoutEnd;
     this.gotStrokePower = false;
-    this.curve = new ForceCurveAssembler();
   }
 
   async connect() {
@@ -264,24 +211,13 @@ export class PM5Device {
       this.tx = null; // monitor still streams data; workouts just can't be loaded
     }
 
-    const subscriptions = [...Object.entries(PM5_HANDLERS), [PM5_UUIDS.forceCurve, (dv) => this.parseForceCurve(dv)]];
-    for (const [uuid, parse] of subscriptions) {
-      try {
-        const ch = await rowing.getCharacteristic(uuid);
-        this.listen(ch, (dv) => this.handle(uuid, parse, dv));
-        await ch.startNotifications();
-      } catch (err) {
-        if (!OPTIONAL.has(uuid)) throw err;
-      }
+    for (const [uuid, parse] of Object.entries(PM5_HANDLERS)) {
+      const ch = await rowing.getCharacteristic(uuid);
+      this.listen(ch, (dv) => this.handle(uuid, parse, dv));
+      await ch.startNotifications();
     }
     this.status = null; // a fresh connection: don't compare with readings from before
-    this.curve.reset();
     this.connected = true;
-  }
-
-  parseForceCurve(dv) {
-    const curve = this.curve.push(dv);
-    return curve ? { forceCurve: curve } : null;
   }
 
   handle(uuid, parse, dv) {
@@ -291,7 +227,6 @@ export class PM5Device {
     } catch {
       return; // short or malformed packet
     }
-    if (!update) return; // partial force curve
     let ended = false;
     if (uuid === PM5_UUIDS.generalStatus) {
       ended = pmWorkoutEnded(this.status?.workoutState, update.pmWorkoutState);

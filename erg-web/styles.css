@@ -268,33 +268,8 @@ main { max-width: 760px; margin: 0 auto; padding: 16px; }
 .m-sub { color: var(--muted); font-size: 0.78rem; min-height: 1.2em; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .minis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding: 0 4px; margin-bottom: 12px; font-variant-numeric: tabular-nums; }
-.minis div, .stroke-stats div { display: flex; flex-direction: column; min-width: 0; }
+.minis div { display: flex; flex-direction: column; min-width: 0; }
 .minis strong { font-size: 1.05rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-/* Stroke: force curve and per-stroke numbers (PM5 and simulator only). */
-.stroke-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
-.stroke-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 6px; }
-.stroke-head h2 { margin: 0; font-size: 1rem; }
-.stroke-view select {
-  font: inherit; font-size: 0.85rem; color: var(--text); background: var(--surface-2);
-  border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; min-height: 36px;
-}
-.stroke-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
-.stroke-body[data-view="off"] { display: none; }
-.stroke-body figure { margin: 0; min-width: 0; }
-.stroke-body svg { display: block; width: 100%; height: auto; }
-.curve-wrap .hint { margin-top: 2px; font-size: 0.75rem; }
-.curve-grid { stroke: var(--border); stroke-width: 1; }
-.curve-axis { fill: var(--muted); font-size: 10px; font-family: var(--font); }
-.curve-old { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linejoin: round; }
-.curve-new { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
-.curve-peak { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
-.curve-empty { fill: var(--muted); font-size: 12px; font-family: var(--font); }
-
-
-.stroke-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px; font-variant-numeric: tabular-nums; }
-.stroke-stats strong { font-size: 1.15rem; }
-.stroke-hint { margin: 10px 0 0; padding: 8px 10px; border-radius: 10px; background: var(--surface-2); font-size: 0.9rem; }
 
 @media (prefers-reduced-motion: reduce) { .band-marker { transition: none; } }
 
@@ -306,7 +281,7 @@ main { max-width: 760px; margin: 0 auto; padding: 16px; }
 .pieces-panel { display: none; }
 .pieces-panel[data-show="true"] { display: block; }
 
-/* Big screens (tablet landscape, laptop, TV): two columns. Numbers on the left, stroke and
+/* Big screens (tablet landscape, laptop, TV): two columns. Numbers on the left, finished
    pieces on the right; everything scales up with the screen so it reads from the erg seat. */
 @media (min-width: 1000px) {
   main:has(#view-workout:not([hidden])) { max-width: 1500px; }
@@ -318,7 +293,6 @@ main { max-width: 760px; margin: 0 auto; padding: 16px; }
   #view-workout[data-side="empty"] .w-side { display: none; }
   #view-workout .sim-controls, #view-workout .workout-actions { grid-column: 1 / -1; }
   #view-workout .workout-actions { max-width: 600px; }
-  .w-side .stroke-panel + .pieces-panel { margin-top: 14px; }
   #view-workout .hero-value { font-size: clamp(5rem, 9vw, 11rem); }
   #view-workout .pace-value { font-size: clamp(3.6rem, 5.5vw, 7rem); }
   #view-workout .pace-target-value { font-size: 2.2em; }
@@ -326,8 +300,6 @@ main { max-width: 760px; margin: 0 auto; padding: 16px; }
   #view-workout .m-label, #view-workout .m-sub { font-size: 0.95em; }
   #view-workout .minis strong { font-size: 1.6em; }
   #view-workout .seg-label { font-size: 1.5em; }
-  #view-workout .stroke-stats strong { font-size: 1.7em; }
-  #view-workout .stroke-hint { font-size: 1.05em; }
   #view-workout .pieces { font-size: 1.05em; }
 }
 

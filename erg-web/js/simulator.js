@@ -16,8 +16,6 @@ export class Simulator {
     this.heartRate = 68;
     this.t = 0;
     this.timer = setInterval(() => this.step(0.5), 500);
-    this.strokeCount = 0;
-    this.strokeLoop();
     return 'Simulated erg';
   }
 
@@ -54,48 +52,7 @@ export class Simulator {
     });
   }
 
-  // Rowing machines also report each stroke: drive and recovery times, and the force curve at the end of the drive. Below 75% effort the curve gets a mid-drive dip, so the
-  // technique note can be tried out.
-  strokeLoop() {
-    const m = MACHINES[this.machine] ?? MACHINES.rower;
-    const spm = this.speed > 0.5 && !this.resting ? m.simCadence * (0.85 + 0.15 * this.effort) : 0;
-    if (!spm || m.paceUnit !== 500) {
-      this.strokeTimer = setTimeout(() => this.strokeLoop(), 500);
-      return;
-    }
-    const cycle = 60 / spm;
-    const driveTime = Math.min(0.95, cycle * 0.34);
-    const recoveryTime = cycle - driveTime;
-    this.strokeTimer = setTimeout(() => {
-      const curve = simulatedCurve(this.speed, this.effort);
-      this.strokeCount += 1;
-      this.onData({
-        driveLength: Math.round((1.38 + 0.06 * this.effort + (Math.random() - 0.5) * 0.04) * 100) / 100,
-        driveTime: Math.round(driveTime * 100) / 100,
-        recoveryTime: Math.round(recoveryTime * 100) / 100,
-        peakForce: Math.max(...curve),
-        avgForce: Math.round(curve.reduce((a, b) => a + b, 0) / curve.length),
-        strokeCount: this.strokeCount,
-        forceCurve: curve,
-      });
-      this.strokeTimer = setTimeout(() => this.strokeLoop(), recoveryTime * 1000);
-    }, driveTime * 1000);
-  }
-
   disconnect() {
     clearInterval(this.timer);
-    clearTimeout(this.strokeTimer);
   }
-}
-
-// A plausible drive: quick rise, peak about 40% through, smooth fall. Force in lbs.
-export function simulatedCurve(speed, effort, points = 32) {
-  const peak = 60 + 45 * speed * effort;
-  const dip = effort < 0.75;
-  return Array.from({ length: points }, (_, i) => {
-    const x = i / (points - 1);
-    let f = Math.sin(Math.PI * x ** 0.85) ** 1.4;
-    if (dip) f *= 1 - 0.35 * Math.exp(-(((x - 0.55) / 0.06) ** 2));
-    return Math.max(0, Math.round(peak * f * (1 + (Math.random() - 0.5) * 0.04)));
-  });
 }

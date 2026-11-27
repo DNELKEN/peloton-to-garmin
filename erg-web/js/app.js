@@ -6,7 +6,6 @@ import { encodeFit, lapsToCsv, FIT_DEVICES } from './fit.js';
 import { PLANS, planDays, planWorkout, nextDay, recordPlanResult } from './plans.js';
 import { LogbookClient, LOGBOOK_TYPES, buildLogbookResult } from './logbook.js';
 import { suggestTargets, applyTargets } from './insights.js';
-import { StrokeTracker } from './stroke.js';
 import { MULTI_MACHINES, SHORT_NAMES, buildCircuit, buildErgathlon, machinesIn, nextLegOn, splitByMachine } from './multi.js';
 import {
   MACHINES, PRESETS, WorkoutEngine, buildIntervals, formatDistance, formatPace,
@@ -30,7 +29,8 @@ const store = {
   },
 };
 
-const settings = { machine: 'rower', fitDevice: 'generic', pushToPm5: true, strokeView: 'curve', ...store.get(SETTINGS_KEY, {}) };
+const settings = { machine: 'rower', fitDevice: 'generic', pushToPm5: true, ...store.get(SETTINGS_KEY, {}) };
+delete settings.strokeView; // setting from the removed stroke panel
 let planProgress = store.get(PLAN_KEY, {});
 const logbook = new LogbookClient();
 
@@ -45,7 +45,6 @@ const state = {
   wakeLock: null,
   summary: null,
   lastCountdownBeep: null,
-  stroke: null, // StrokeTracker while a workout runs
   rep: null, // running averages for the current piece
 };
 
@@ -363,13 +362,11 @@ function onErgData(update, conn) {
     const active = conn?.machine === e.machineOf(e.segment);
     if (active) Object.assign(state.live, update);
     e.ingest({ ...update, source: conn?.machine }, Date.now());
-    if (active) state.stroke?.ingest(update);
     return;
   }
   if (conn && conn !== state.erg) return; // a multi-erg machine, idle between workouts
   Object.assign(state.live, update);
   e?.ingest(update, Date.now());
-  state.stroke?.ingest(update);
   if (!e) renderLivePreview();
 }
 
@@ -589,10 +586,7 @@ async function startWorkout() {
       if (!e) return;
       driveSimulators(e);
       if (index > 0) beep(seg.type === 'work' ? 990 : 520, 350);
-      if (e.multi && index > 0) {
-        loadNextLeg(e, index - 1);
-        setupStrokePanel(); // new machine: start its stroke panel fresh
-      }
+      if (e.multi && index > 0) loadNextLeg(e, index - 1);
     },
     onFinish: (summary) => setTimeout(() => finishWorkout(summary)),
   });
@@ -601,7 +595,6 @@ async function startWorkout() {
   renderSimEffort();
   state.rep = null;
   state.piecesKey = null;
-  setupStrokePanel();
   show('workout');
   state.timer = setInterval(renderWorkout, 200);
   renderWorkout();
@@ -688,7 +681,6 @@ function renderWorkout() {
     : v.seg.kind === 'distance' ? formatTime(proj, true) : formatDistance(proj);
   $('#w-dist').textContent = formatDistance(v.totalDistance);
   $('#w-time').textContent = formatTime(v.totalElapsed);
-  renderStrokePanel();
   renderPieces(e, v, m);
   $('#start-now').hidden = v.state !== 'armed';
 }
@@ -744,7 +736,7 @@ function renderPieces(e, v, m) {
   const panel = $('#w-pieces');
   const show = v.works > 1;
   panel.dataset.show = String(show);
-  $('#view-workout').dataset.side = show || !$('#w-stroke').hidden ? 'full' : 'empty';
+  $('#view-workout').dataset.side = show ? 'full' : 'empty';
   if (!show) return;
   const done = e.laps.filter((l) => l.type === 'work');
   const key = `${done.length}:${v.segIndex}`;
@@ -761,86 +753,6 @@ function renderPieces(e, v, m) {
   });
   if (v.seg.type === 'work' && done.length < v.works) rows.push(`<tr class="current"><td>${done.length + 1}</td><td colspan="5">in progress</td></tr>`);
   $('#w-pieces-body').innerHTML = rows.join('');
-}
-
-// ---------- stroke panel: force curve and stroke numbers ----------
-
-function setupStrokePanel() {
-  const e = state.engine;
-  const machine = e?.multi ? e.machineOf(e.segment) : settings.machine;
-  const kind = e?.multi ? connFor(machine)?.kind : state.erg?.kind;
-  const hasStrokes = (kind === 'pm5' || kind === 'sim') && machineInfo(machine).paceUnit === 500;
-  state.stroke = hasStrokes ? new StrokeTracker() : null;
-  $('#w-stroke').hidden = !hasStrokes;
-  if (!hasStrokes) return;
-  if (settings.strokeView !== 'off') settings.strokeView = 'curve'; // older saved choices
-  $('#stroke-view').value = settings.strokeView;
-  $('#w-stroke-body').dataset.view = settings.strokeView;
-  drawForceCurve($('#w-curve'), []);
-  for (const id of ['#w-length', '#w-peak', '#w-ratio']) $(id).textContent = '--';
-  $('#w-hint').hidden = true;
-  state.strokeDrawn = -1;
-}
-
-// Redrawn from the screen update loop, only when a new stroke has arrived.
-function renderStrokePanel() {
-  const tracker = state.stroke;
-  if (!tracker || tracker.version === state.strokeDrawn) return;
-  state.strokeDrawn = tracker.version;
-  renderStrokeNumbers(tracker);
-}
-
-function renderStrokeNumbers(tracker) {
-  const s = tracker.stroke;
-  if (s) {
-    $('#w-length').textContent = s.driveLength ? `${s.driveLength.toFixed(2)} m` : '--';
-    $('#w-peak').textContent = s.peakForce ? `${Math.round(s.peakForce)} lb` : '--';
-    $('#w-ratio').textContent = tracker.ratio ? `1 : ${tracker.ratio.toFixed(1)}` : '--';
-  }
-  drawForceCurve($('#w-curve'), tracker.curves);
-  const hint = tracker.hint;
-  $('#w-hint').hidden = !hint;
-  $('#w-hint').textContent = hint?.text ?? '';
-}
-
-// Force through the drive for the latest stroke, with the few before it drawn faint behind.
-function drawForceCurve(svg, curves) {
-  const W = 300;
-  const H = 150;
-  const left = 34;
-  const right = 292;
-  const top = 24;
-  const bottom = 132;
-  if (!curves.length) {
-    svg.innerHTML = `<text class="curve-empty" x="${W / 2}" y="${H / 2}" text-anchor="middle">Force curve appears after your first stroke</text>`;
-    return;
-  }
-  const peak = Math.max(...curves.flat());
-  const step = peak > 300 ? 100 : 50;
-  const yMax = Math.max(step, Math.ceil(peak / step) * step);
-  const x = (i, n) => left + (i / (n - 1)) * (right - left);
-  const y = (f) => bottom - (f / yMax) * (bottom - top);
-  const line = (c) => c.map((f, i) => `${x(i, c.length).toFixed(1)},${y(f).toFixed(1)}`).join(' ');
-
-  let out = '';
-  for (let g = 0; g <= yMax; g += step) {
-    out += `<line class="curve-grid" x1="${left}" x2="${right}" y1="${y(g)}" y2="${y(g)}"/>`;
-    out += `<text class="curve-axis" x="${left - 6}" y="${y(g) + 3}" text-anchor="end">${g}</text>`;
-  }
-  out += `<text class="curve-axis" x="${left}" y="${H - 2}">catch</text><text class="curve-axis" x="${right}" y="${H - 2}" text-anchor="end">finish</text>`;
-  out += `<text class="curve-axis" x="${left - 6}" y="10" text-anchor="end">lb</text>`;
-  const older = curves.slice(0, -1);
-  older.forEach((c, i) => {
-    out += `<polyline class="curve-old" style="opacity:${(0.15 + (0.3 * (i + 1)) / older.length).toFixed(2)}" points="${line(c)}"/>`;
-  });
-  const latest = curves.at(-1);
-  out += `<polyline class="curve-new" points="${line(latest)}"/>`;
-  const pi = latest.indexOf(Math.max(...latest));
-  const px = x(pi, latest.length);
-  const py = y(latest[pi]);
-  out += `<circle class="curve-peak" r="4.5" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}"/>`;
-  out += `<text class="curve-axis" x="${px.toFixed(1)}" y="${(py - 8).toFixed(1)}" text-anchor="middle">${Math.round(latest[pi])}</text>`;
-  svg.innerHTML = out;
 }
 
 // Multi-erg: one chip per machine, so a monitor that fell asleep is spotted before the changeover.
@@ -867,7 +779,6 @@ function stopWorkoutLoop() {
   clearInterval(state.timer);
   state.timer = null;
   state.engine = null;
-  state.stroke = null;
   state.wakeLock?.release?.().catch(() => {});
   state.wakeLock = null;
 }
@@ -1138,11 +1049,6 @@ function init() {
 
   for (const btn of document.querySelectorAll('[data-connect]')) btn.addEventListener('click', () => connect(btn.dataset.connect));
   $('#machine').addEventListener('change', (e) => setMachine(e.target.value));
-  $('#stroke-view').addEventListener('change', (e) => {
-    settings.strokeView = e.target.value;
-    store.set(SETTINGS_KEY, settings);
-    $('#w-stroke-body').dataset.view = settings.strokeView;
-  });
   $('#fit-device').addEventListener('change', (e) => { settings.fitDevice = e.target.value; store.set(SETTINGS_KEY, settings); });
 
   setupMultiForm();

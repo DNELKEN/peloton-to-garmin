@@ -28,13 +28,9 @@ No build step and no dependencies: plain HTML, CSS and JavaScript modules.
   showing how close you are (within 1.5 s is on target), stroke rate, watts and heart rate with
   the piece average (or target watts), rep average, projected finish, beeps at transitions and a
   3-2-1 countdown at the end of rests. The screen stays awake. Calories are on the summary.
-- **Stroke panel** (PM5 and simulator, RowErg and SkiErg): the force curve of each stroke with
-  the last few drawn faint behind it, stroke length, peak force, drive : recovery ratio, and a
-  technique note when three strokes in a row show a late peak, a very early peak or a dip in the
-  middle of the drive. It can be switched to numbers only.
 - **Pieces**: in interval workouts, a table of finished pieces (split, rate, watts, HR, vs target).
 - **Big screens** (1000 px and wider, e.g. a tablet on its side, a laptop or a TV): two columns,
-  with the numbers on the left and the stroke panel and pieces on the right, all scaled up to be
+  with the numbers on the left and the finished pieces on the right, all scaled up to be
   readable from the seat.
 - **Multi-erg workouts**: a Circuit (the same leg on each machine in turn, for a number of
   rounds, with an option to double BikeErg distances to match the effort) or an Ergathlon (one
@@ -115,4 +111,3 @@ encoder's header and CRCs.
   Bluetooth; each message fits in one 20-byte Bluetooth packet.
 - Plan progress, targets and history are stored in this browser only.
 - Not yet: the 24-week Beginner Pete Plan.
-- The simulator's force curve gets a mid-drive dip below 75% effort, so the technique note can be tried without an erg.
