@@ -48,6 +48,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; } /* keep hidden elements hidden even when a class sets display */
 
 body {
   margin: 0;
@@ -152,7 +153,7 @@ main { max-width: 760px; margin: 0 auto; padding: 16px; }
 
 .custom-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; align-items: end; }
 
-.tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px; background: var(--surface-2); border-radius: 12px; margin-bottom: 12px; }
+.tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 4px; background: var(--surface-2); border-radius: 12px; margin-bottom: 12px; }
 .tab { font: inherit; font-weight: 600; border: 0; border-radius: 9px; padding: 9px 6px; background: transparent; color: var(--muted); cursor: pointer; min-height: 40px; }
 .tab[aria-selected="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgb(0 0 0 / 0.15); }
 
@@ -188,6 +189,26 @@ main { max-width: 760px; margin: 0 auto; padding: 16px; }
 .history li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--border); font-variant-numeric: tabular-nums; }
 .history li:first-child { border-top: 0; }
 .history .h-meta { color: var(--muted); font-size: 0.85rem; }
+
+/* ---------- multi-erg ---------- */
+.multi-form { display: grid; gap: 10px; }
+.seg-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; background: var(--surface-2); border-radius: 12px; }
+.seg-toggle label { position: relative; }
+.seg-toggle input { position: absolute; opacity: 0; inset: 0; }
+.seg-toggle span { display: block; text-align: center; font-weight: 600; padding: 9px 6px; border-radius: 9px; color: var(--muted); cursor: pointer; }
+.seg-toggle input:checked + span { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgb(0 0 0 / 0.15); }
+.seg-toggle input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.multi-form .hint { margin: 0; }
+.multi-legs { display: grid; gap: 8px; }
+.multi-leg { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.multi-form[data-format="circuit"] [data-for="ergathlon"], .multi-form[data-format="ergathlon"] [data-for="circuit"] { display: none; }
+.multi-machines { display: grid; gap: 8px; margin: 0 0 12px; }
+.multi-machine { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border-radius: 10px; background: var(--surface-2); }
+.multi-machine .mm-name { font-weight: 600; }
+.multi-machine .mm-status { color: var(--muted); font-size: 0.85rem; }
+.multi-machine[data-connected="true"] .mm-status { color: var(--good); }
+.multi-machine .mm-buttons { display: flex; gap: 6px; }
+.hero[data-type="transition"] { border-color: var(--rest); }
 
 /* ---------- workout ---------- */
 .seg-header { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: baseline; margin-bottom: 8px; }

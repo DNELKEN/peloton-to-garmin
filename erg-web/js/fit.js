@@ -135,31 +135,60 @@ export function encodeFit(summary, { device = 'generic' } = {}) {
 
   w.write('event', { timestamp: end, event: 0, event_type: 4 }); // timer stop_all
 
+  // A multi-erg workout becomes a multisport activity: one session per leg, with the time spent
+  // changing machines as transition sessions in between.
+  const sportOf = (l) => (l.type === 'transition' ? { sport: 3, subSport: 0 } : summary.multi ? machineInfo(l.machine) : { sport, subSport });
+
   summary.laps.forEach((l, i) => {
+    const ls = sportOf(l);
     w.write('lap', {
       message_index: i, timestamp: toFitTime(l.endTime), event: 9, event_type: 1, start_time: toFitTime(l.startTime),
       total_elapsed_time: l.duration, total_timer_time: l.duration, total_distance: l.distance, total_cycles: l.cycles, total_calories: l.calories,
       avg_speed: l.avgSpeed, max_speed: l.maxSpeed, avg_heart_rate: l.avgHr, max_heart_rate: l.maxHr, avg_cadence: n(l.avgCadence),
       avg_power: n(l.avgPower), max_power: n(l.maxPower), intensity: l.type === 'rest' ? 1 : 0,
-      lap_trigger: l.partial ? 0 : l.kind === 'distance' ? 2 : l.kind === 'time' ? 1 : 7, sport, sub_sport: subSport,
+      lap_trigger: l.partial ? 0 : l.kind === 'distance' ? 2 : l.kind === 'time' ? 1 : 7, sport: ls.sport, sub_sport: ls.subSport,
     });
   });
 
-  w.write('session', {
-    message_index: 0, timestamp: end, event: 8, event_type: 1, start_time: start, sport, sub_sport: subSport,
-    total_elapsed_time: summary.elapsed, total_timer_time: summary.elapsed, total_distance: summary.totalDistance, total_cycles: summary.cycles,
-    total_calories: summary.calories, avg_speed: summary.elapsed > 0 ? summary.totalDistance / summary.elapsed : 0, max_speed: summary.maxSpeed,
-    avg_heart_rate: summary.avgHr, max_heart_rate: summary.maxHr, avg_cadence: n(summary.avgCadence), avg_power: n(summary.avgPower), max_power: n(summary.maxPower),
-    first_lap_index: 0, num_laps: summary.laps.length, trigger: 0,
-  });
+  let numSessions = 1;
+  if (summary.multi) {
+    numSessions = summary.laps.length;
+    summary.laps.forEach((l, i) => {
+      const ls = sportOf(l);
+      w.write('session', {
+        message_index: i, timestamp: toFitTime(l.endTime), event: 8, event_type: 1, start_time: toFitTime(l.startTime), sport: ls.sport, sub_sport: ls.subSport,
+        total_elapsed_time: l.duration, total_timer_time: l.duration, total_distance: l.distance, total_cycles: l.cycles,
+        total_calories: l.calories, avg_speed: l.avgSpeed, max_speed: l.maxSpeed,
+        avg_heart_rate: l.avgHr, max_heart_rate: l.maxHr, avg_cadence: n(l.avgCadence), avg_power: n(l.avgPower), max_power: n(l.maxPower),
+        first_lap_index: i, num_laps: 1, trigger: 0,
+      });
+    });
+  } else {
+    w.write('session', {
+      message_index: 0, timestamp: end, event: 8, event_type: 1, start_time: start, sport, sub_sport: subSport,
+      total_elapsed_time: summary.elapsed, total_timer_time: summary.elapsed, total_distance: summary.totalDistance, total_cycles: summary.cycles,
+      total_calories: summary.calories, avg_speed: summary.elapsed > 0 ? summary.totalDistance / summary.elapsed : 0, max_speed: summary.maxSpeed,
+      avg_heart_rate: summary.avgHr, max_heart_rate: summary.maxHr, avg_cadence: n(summary.avgCadence), avg_power: n(summary.avgPower), max_power: n(summary.maxPower),
+      first_lap_index: 0, num_laps: summary.laps.length, trigger: 0,
+    });
+  }
 
   const tzOffsetSec = new Date(summary.endTime).getTimezoneOffset() * 60;
-  w.write('activity', { timestamp: end, total_timer_time: summary.elapsed, num_sessions: 1, type: 0, event: 26, event_type: 1, local_timestamp: end - tzOffsetSec });
+  w.write('activity', { timestamp: end, total_timer_time: summary.elapsed, num_sessions: numSessions, type: 0, event: 26, event_type: 1, local_timestamp: end - tzOffsetSec });
 
   return w.bytes();
 }
 
 export function lapsToCsv(summary) {
+  if (summary.multi) {
+    // Legs are on different machines: pace is per 500 m on RowErg/SkiErg and per 1,000 m on bikes.
+    const rows = [['lap', 'type', 'machine', 'duration_s', 'distance_m', 'pace_s', 'pace_per_m', 'avg_watts', 'avg_cadence', 'avg_hr', 'max_hr', 'calories']];
+    for (const l of summary.laps) {
+      const unit = machineInfo(l.machine).paceUnit;
+      rows.push([l.index + 1, l.type, l.machine, l.duration.toFixed(1), l.distance.toFixed(1), l.pace?.toFixed(1) ?? '', l.pace ? unit : '', l.avgPower, l.avgCadence, l.avgHr ?? '', l.maxHr ?? '', l.calories]);
+    }
+    return rows.map((r) => r.join(',')).join('\n') + '\n';
+  }
   const unit = machineInfo(summary.machine).paceUnit;
   const rows = [['lap', 'type', 'duration_s', 'distance_m', `pace_s_per_${unit}m`, 'avg_watts', 'avg_cadence', 'avg_hr', 'max_hr', 'calories']];
   for (const l of summary.laps) {
