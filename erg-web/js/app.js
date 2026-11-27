@@ -6,7 +6,6 @@ import { encodeFit, lapsToCsv, FIT_DEVICES } from './fit.js';
 import { PLANS, planDays, planWorkout, nextDay, recordPlanResult } from './plans.js';
 import { LogbookClient, LOGBOOK_TYPES, buildLogbookResult } from './logbook.js';
 import { StrokeTracker } from './stroke.js';
-import { createFigure, drawFigure, poseAt } from './rower-figure.js';
 import {
   MACHINES, PRESETS, WorkoutEngine, buildIntervals, formatDistance, formatPace,
   formatTime, machineInfo, parseDuration,
@@ -27,7 +26,7 @@ const store = {
   },
 };
 
-const settings = { machine: 'rower', fitDevice: 'generic', pushToPm5: true, strokeView: 'both', ...store.get(SETTINGS_KEY, {}) };
+const settings = { machine: 'rower', fitDevice: 'generic', pushToPm5: true, strokeView: 'curve', ...store.get(SETTINGS_KEY, {}) };
 let planProgress = store.get(PLAN_KEY, {});
 const logbook = new LogbookClient();
 
@@ -249,7 +248,7 @@ function onErgData(update) {
   if (state.hr) delete update.heartRate; // a dedicated strap wins over the erg's own HR
   Object.assign(state.live, update);
   state.engine?.ingest(update, Date.now());
-  state.stroke?.ingest(update, Date.now());
+  state.stroke?.ingest(update);
   if (!state.engine) renderLivePreview();
 }
 
@@ -356,6 +355,7 @@ async function startWorkout() {
   $('#sim-controls').hidden = state.erg.kind !== 'sim';
   renderSimEffort();
   state.rep = null;
+  state.piecesKey = null;
   setupStrokePanel();
   show('workout');
   state.timer = setInterval(renderWorkout, 200);
@@ -428,6 +428,8 @@ function renderWorkout() {
     : v.seg.kind === 'distance' ? formatTime(proj, true) : formatDistance(proj);
   $('#w-dist').textContent = formatDistance(v.totalDistance);
   $('#w-time').textContent = formatTime(v.totalElapsed);
+  renderStrokePanel();
+  renderPieces(e, v, m);
   $('#start-now').hidden = v.state !== 'armed';
 }
 
@@ -477,59 +479,51 @@ function trackRepAverages(v, isRest) {
   return Object.fromEntries(['cadence', 'power', 'heartRate'].map((k) => [k, r.counts[k] ? r.sums[k] / r.counts[k] : null]));
 }
 
-// ---------- stroke panel: force curve, rower figure, stroke numbers ----------
-
-const PHASE_TEXT = { drive: 'Drive: legs, then back, then arms', recovery: 'Recovery: arms, then body, then slide', idle: 'Waiting for the next stroke' };
-let figureParts = null;
-
-function strokeViewFor(machine) {
-  const view = settings.strokeView;
-  if (machine === 'rower') return view;
-  // The figure is a rower; on other machines show the curve instead.
-  return view === 'figure' || view === 'both' ? 'curve' : view;
+// Completed work pieces, for interval workouts. Shown in the side column on big screens.
+function renderPieces(e, v, m) {
+  const panel = $('#w-pieces');
+  const show = v.works > 1;
+  panel.dataset.show = String(show);
+  $('#view-workout').dataset.side = show || !$('#w-stroke').hidden ? 'full' : 'empty';
+  if (!show) return;
+  const done = e.laps.filter((l) => l.type === 'work');
+  const key = `${done.length}:${v.segIndex}`;
+  if (state.piecesKey === key) return;
+  state.piecesKey = key;
+  $('#w-pieces-pace').textContent = `/${m.paceUnit}m`;
+  const rows = done.map((l, i) => {
+    const delta = l.targetPace && l.pace ? l.pace - l.targetPace : null;
+    const cls = delta == null ? '' : delta <= 0 ? 'ahead' : 'behind';
+    const vs = delta == null ? '' : `${delta <= 0 ? '−' : '+'}${Math.abs(delta).toFixed(1)}s`;
+    return `<tr><td>${i + 1}</td><td>${formatPace(l.pace)}</td><td>${l.avgCadence || '--'}</td><td>${l.avgPower || '--'}</td><td>${l.avgHr ?? '--'}</td><td class="${cls}">${vs}</td></tr>`;
+  });
+  if (v.seg.type === 'work' && done.length < v.works) rows.push(`<tr class="current"><td>${done.length + 1}</td><td colspan="5">in progress</td></tr>`);
+  $('#w-pieces-body').innerHTML = rows.join('');
 }
+
+// ---------- stroke panel: force curve and stroke numbers ----------
 
 function setupStrokePanel() {
   const kind = state.erg?.kind;
-  const machine = settings.machine;
-  const hasStrokes = (kind === 'pm5' || kind === 'sim') && machineInfo(machine).paceUnit === 500;
+  const hasStrokes = (kind === 'pm5' || kind === 'sim') && machineInfo(settings.machine).paceUnit === 500;
   state.stroke = hasStrokes ? new StrokeTracker() : null;
   $('#w-stroke').hidden = !hasStrokes;
   if (!hasStrokes) return;
+  if (settings.strokeView !== 'off') settings.strokeView = 'curve'; // older saved choices
   $('#stroke-view').value = settings.strokeView;
-  $('#stroke-view').querySelector('option[value="figure"]').hidden = machine !== 'rower';
-  $('#stroke-view').querySelector('option[value="both"]').hidden = machine !== 'rower';
-  $('#w-stroke-body').dataset.view = strokeViewFor(machine);
-  if (!figureParts) figureParts = createFigure($('#w-figure'));
-  drawFigure(figureParts, poseAt('idle', 0));
-  $('#w-figure-wrap').dataset.phase = 'idle';
-  $('#w-phase').textContent = 'Waiting for the first stroke';
+  $('#w-stroke-body').dataset.view = settings.strokeView;
   drawForceCurve($('#w-curve'), []);
   for (const id of ['#w-length', '#w-peak', '#w-ratio']) $(id).textContent = '--';
   $('#w-hint').hidden = true;
   state.strokeDrawn = -1;
-  cancelAnimationFrame(state.strokeFrame);
-  state.strokeFrame = requestAnimationFrame(animateStroke);
 }
 
-function animateStroke() {
+// Redrawn from the screen update loop, only when a new stroke has arrived.
+function renderStrokePanel() {
   const tracker = state.stroke;
-  if (!tracker || !state.engine) return;
-  const view = $('#w-stroke-body').dataset.view;
-  if (view === 'both' || view === 'figure') {
-    const { phase, t } = tracker.phaseAt(Date.now());
-    drawFigure(figureParts, poseAt(phase, t));
-    const wrap = $('#w-figure-wrap');
-    if (wrap.dataset.phase !== phase) {
-      wrap.dataset.phase = phase;
-      $('#w-phase').textContent = tracker.stroke ? PHASE_TEXT[phase] : 'Waiting for the first stroke';
-    }
-  }
-  if (tracker.version !== state.strokeDrawn) {
-    state.strokeDrawn = tracker.version;
-    renderStrokeNumbers(tracker);
-  }
-  state.strokeFrame = requestAnimationFrame(animateStroke);
+  if (!tracker || tracker.version === state.strokeDrawn) return;
+  state.strokeDrawn = tracker.version;
+  renderStrokeNumbers(tracker);
 }
 
 function renderStrokeNumbers(tracker) {
@@ -594,7 +588,6 @@ function stopWorkoutLoop() {
   clearInterval(state.timer);
   state.timer = null;
   state.engine = null;
-  cancelAnimationFrame(state.strokeFrame);
   state.stroke = null;
   state.wakeLock?.release?.().catch(() => {});
   state.wakeLock = null;
@@ -786,8 +779,7 @@ function init() {
   $('#stroke-view').addEventListener('change', (e) => {
     settings.strokeView = e.target.value;
     store.set(SETTINGS_KEY, settings);
-    $('#w-stroke-body').dataset.view = strokeViewFor(settings.machine);
-    state.strokeDrawn = -1;
+    $('#w-stroke-body').dataset.view = settings.strokeView;
   });
   $('#fit-device').addEventListener('change', (e) => { settings.fitDevice = e.target.value; store.set(SETTINGS_KEY, settings); });
 

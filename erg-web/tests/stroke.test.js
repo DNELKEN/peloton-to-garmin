@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { toDataView } from '../js/bytes.js';
 import { ForceCurveAssembler, PM5Device, PM5_HANDLERS, PM5_UUIDS } from '../js/pm5.js';
 import { StrokeTracker, analyzeCurve, HINTS } from '../js/stroke.js';
-import { poseAt, bodyAt } from '../js/rower-figure.js';
 import { simulatedCurve } from '../js/simulator.js';
 
 const le = (v, n) => Array.from({ length: n }, (_, i) => (v >> (8 * i)) & 0xff);
@@ -29,13 +28,9 @@ test('force curve with a dropped notification is thrown away', () => {
   assert.deepEqual(fc.push(packet(3, 5, [10, 5, 0])), [100, 50, 0, 80, 40, 0, 10, 5, 0]);
 });
 
-test('PM5 reports stroke state, stroke data and whole force curves', () => {
+test('PM5 reports stroke data and whole force curves', () => {
   const updates = [];
   const pm = new PM5Device({ onData: (u) => updates.push(u) });
-  const status = toDataView([...le(0, 3), ...le(1000, 3), 1, 0, 1, 1, 2, ...le(0, 3), ...le(0, 3), 0x80, 120]);
-  pm.handle(PM5_UUIDS.generalStatus, PM5_HANDLERS[PM5_UUIDS.generalStatus], status);
-  assert.equal(updates.at(-1).strokeState, 2);
-
   const stroke = toDataView([...le(0, 3), ...le(0, 3), 142, 82, ...le(168, 2), ...le(1000, 2), ...le(2450, 2), ...le(1300, 2), ...le(5000, 2), ...le(37, 2)]);
   pm.handle(PM5_UUIDS.strokeData, PM5_HANDLERS[PM5_UUIDS.strokeData], stroke);
   assert.deepEqual(updates.at(-1), { driveLength: 1.42, driveTime: 0.82, recoveryTime: 1.68, peakForce: 245, avgForce: 130, strokeCount: 37 });
@@ -48,29 +43,20 @@ test('PM5 reports stroke state, stroke data and whole force curves', () => {
   assert.deepEqual(updates.at(-1), { forceCurve: [0, 100, 200, 150, 50, 0] });
 });
 
-test('stroke tracker runs the cycle on from the last anchor', () => {
+test('stroke tracker keeps the latest stroke and its ratio', () => {
   const t = new StrokeTracker();
-  assert.equal(t.phaseAt(0).phase, 'idle');
-  t.ingest({ strokeState: 1 }, 0);
-  t.ingest({ strokeState: 2 }, 1000); // drive starts
-  t.ingest({ strokeState: 4, driveTime: 0.8, recoveryTime: 1.7, driveLength: 1.4, peakForce: 230 }, 1800);
-  assert.deepEqual(t.phaseAt(1800), { phase: 'recovery', t: 0 });
-  assert.equal(t.phaseAt(2650).phase, 'recovery');
-  assert.ok(Math.abs(t.phaseAt(2650).t - 0.5) < 1e-9);
-  // No news: predicts the next drive from the measured times...
-  assert.equal(t.phaseAt(1800 + 1700 + 400).phase, 'drive');
-  assert.ok(Math.abs(t.phaseAt(1800 + 1700 + 400).t - 0.5) < 1e-9);
-  // ...for a couple of strokes, then gives up.
-  assert.equal(t.phaseAt(1800 + 2500 * 2 + 1).phase, 'idle');
+  assert.equal(t.ratio, null);
+  t.ingest({ driveTime: 0.8, recoveryTime: 1.7, driveLength: 1.4, peakForce: 230, avgForce: 120 });
+  assert.equal(t.stroke.driveLength, 1.4);
   assert.ok(Math.abs(t.ratio - 1.7 / 0.8) < 1e-9);
-  // A drive seen on the monitor re-anchors the cycle.
-  t.ingest({ strokeState: 2 }, 3600);
-  assert.deepEqual(t.phaseAt(3600), { phase: 'drive', t: 0 });
+  assert.equal(t.version, 1);
+  t.ingest({ distance: 100 }); // other updates change nothing
+  assert.equal(t.version, 1);
 });
 
 test('stroke tracker keeps the last five curves', () => {
   const t = new StrokeTracker();
-  for (let i = 0; i < 7; i++) t.ingest({ forceCurve: [0, i + 10, 0] }, i);
+  for (let i = 0; i < 7; i++) t.ingest({ forceCurve: [0, i + 10, 0] });
   assert.equal(t.curves.length, 5);
   assert.deepEqual(t.latestCurve, [0, 16, 0]);
   assert.equal(t.version, 7);
@@ -83,33 +69,11 @@ test('curve shape notes', () => {
   assert.equal(analyzeCurve([0, 240, 200, 170, 150, 130, 110, 90, 70, 40, 10, 0]).hint, HINTS.early);
   // Only shown when three strokes in a row agree.
   const t = new StrokeTracker();
-  t.ingest({ forceCurve: simulatedCurve(4, 0.6) }, 0);
-  t.ingest({ forceCurve: simulatedCurve(4, 0.6) }, 1);
+  t.ingest({ forceCurve: simulatedCurve(4, 0.6) });
+  t.ingest({ forceCurve: simulatedCurve(4, 0.6) });
   assert.equal(t.hint, null);
-  t.ingest({ forceCurve: simulatedCurve(4, 0.6) }, 2);
+  t.ingest({ forceCurve: simulatedCurve(4, 0.6) });
   assert.equal(t.hint, HINTS.dip);
-  t.ingest({ forceCurve: simulatedCurve(4, 1) }, 3);
+  t.ingest({ forceCurve: simulatedCurve(4, 1) });
   assert.equal(t.hint, null);
-});
-
-test('rower figure moves legs, then back, then arms on the drive', () => {
-  const early = bodyAt('drive', 0.25);
-  assert.ok(early.seatX < bodyAt('drive', 0).seatX); // legs moving
-  assert.equal(early.reach, 1); // arms still straight
-  const late = bodyAt('drive', 0.9);
-  assert.ok(late.reach < 1 && late.lean < 0); // arms drawing in, leaning back
-  // Recovery reverses: arms out before the seat slides.
-  const rec = bodyAt('recovery', 0.3);
-  assert.equal(rec.reach, 1);
-  assert.equal(rec.seatX, bodyAt('recovery', 0).seatX);
-
-  for (const [phase, t] of [['drive', 0], ['drive', 0.5], ['drive', 1], ['recovery', 0.5], ['idle', 0]]) {
-    const p = poseAt(phase, t);
-    const len = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-    assert.ok(Math.abs(len(p.hip, p.knee) - 56) < 0.5, `thigh ${phase} ${t}`);
-    assert.ok(Math.abs(len(p.knee, p.foot) - 56) < 0.5, `shin ${phase} ${t}`);
-    assert.ok(p.knee.y <= p.hip.y + 0.5, 'knees bend upward');
-    assert.ok(len(p.shoulder, p.handle) <= 52.5, 'handle within reach');
-    assert.ok(p.handle.x > p.shoulder.x, 'handle in front of the body');
-  }
 });
