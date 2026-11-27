@@ -86,12 +86,22 @@ jobs:
               - dockerfile: 'Dockerfile.webui'
                 tag: 'pr-validator-webui-A'
 
+    # Forks usually don't have the Docker Hub login, so skip publishing instead of failing.
+    env:
+      HAS_DOCKER_LOGIN: ${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' }}
+
     steps:
 
+    - name: ⏭ Skip when Docker Hub login is not configured
+      if: env.HAS_DOCKER_LOGIN != 'true'
+      run: echo "::notice::DOCKER_USERNAME / DOCKER_PASSWORD secrets are not set; skipping Docker image publishing."
+
     - name: ⤵ Checkout the code
+      if: env.HAS_DOCKER_LOGIN == 'true'
       uses: actions/checkout@v3
 
     - name: 📢 Publish Docker Images
+      if: env.HAS_DOCKER_LOGIN == 'true'
       uses: ./.github/actions/publish-docker-images
       with:
         dockerfile: ${{ matrix.dockerfile }}
