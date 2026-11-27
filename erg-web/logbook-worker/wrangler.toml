@@ -8,8 +8,8 @@ compatibility_date = "2025-01-01"
 C2_BASE_URL = "https://log-dev.concept2.com"
 # Where the app is hosted (the page Concept2 sign-in returns to).
 APP_URL = "https://dnelken.github.io/peloton-to-garmin/erg-web/"
-# Public client ID from your Concept2 developer account.
-C2_CLIENT_ID = "REPLACE_WITH_YOUR_CLIENT_ID"
+# Public client ID of the "Erg Trainer" app on log-dev.concept2.com (not a secret).
+C2_CLIENT_ID = "aXgj9hG8H5b1OFPyqexCLPrbgQWqecuxo78vA1v9"
 
 # Secrets are NOT stored here. Set them with:
 #   npx wrangler secret put C2_CLIENT_SECRET
