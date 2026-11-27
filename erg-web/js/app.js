@@ -5,6 +5,8 @@ import { Simulator } from './simulator.js';
 import { encodeFit, lapsToCsv, FIT_DEVICES } from './fit.js';
 import { PLANS, planDays, planWorkout, nextDay, recordPlanResult } from './plans.js';
 import { LogbookClient, LOGBOOK_TYPES, buildLogbookResult } from './logbook.js';
+import { StrokeTracker } from './stroke.js';
+import { MULTI_MACHINES, SHORT_NAMES, buildCircuit, buildErgathlon, machinesIn, nextLegOn, splitByMachine } from './multi.js';
 import {
   MACHINES, PRESETS, WorkoutEngine, buildIntervals, formatDistance, formatPace,
   formatTime, machineInfo, parseDuration,
@@ -25,12 +27,13 @@ const store = {
   },
 };
 
-const settings = { machine: 'rower', fitDevice: 'generic', pushToPm5: true, ...store.get(SETTINGS_KEY, {}) };
+const settings = { machine: 'rower', fitDevice: 'generic', pushToPm5: true, strokeView: 'curve', ...store.get(SETTINGS_KEY, {}) };
 let planProgress = store.get(PLAN_KEY, {});
 const logbook = new LogbookClient();
 
 const state = {
-  erg: null, // { kind, device, name }
+  erg: null, // { kind, device, name, machine }: the erg for single-machine workouts
+  ergs: {}, // machine -> connection, for the other machines in a multi-erg workout
   hr: null,
   live: {},
   workout: PRESETS[1],
@@ -39,7 +42,23 @@ const state = {
   wakeLock: null,
   summary: null,
   lastCountdownBeep: null,
+  stroke: null, // StrokeTracker while a workout runs
+  rep: null, // running averages for the current piece
 };
+
+const machineLabel = (key) => (key === 'multi' ? 'Multi-erg' : machineInfo(key).label);
+const shortName = (key) => SHORT_NAMES[key] ?? machineInfo(key).label;
+
+// The connection for a machine: one connected for a multi-erg workout, or the main erg if it is
+// set to that machine.
+function connFor(machine) {
+  return state.ergs[machine] ?? (state.erg?.machine === machine ? state.erg : null);
+}
+
+// Every connected erg, without duplicates.
+function allErgs() {
+  return [...new Set([state.erg, ...Object.values(state.ergs)].filter(Boolean))];
+}
 
 // ---------- sound ----------
 
@@ -71,19 +90,32 @@ function setChip(el, label, on) {
 }
 
 function updateConnectionUi() {
-  setChip($('#chip-erg'), state.erg ? `Erg: ${state.erg.name}` : 'Erg: none', !!state.erg);
+  const multiErgs = Object.keys(state.ergs);
+  if (multiErgs.length) setChip($('#chip-erg'), `Ergs: ${multiErgs.map(shortName).join(', ')}`, true);
+  else setChip($('#chip-erg'), state.erg ? `Erg: ${state.erg.name}` : 'Erg: none', !!state.erg);
   setChip($('#chip-hr'), state.hr ? `HR: ${state.hr.name}` : 'HR: none', !!state.hr);
   for (const btn of document.querySelectorAll('[data-connect]')) {
     const kind = btn.dataset.connect;
     const connected = kind === 'hr' ? !!state.hr : state.erg?.kind === kind;
     btn.dataset.connected = String(connected);
   }
-  const canPush = state.erg?.kind === 'pm5' && state.erg.device.canProgram;
-  $('#push-row').hidden = !canPush;
-  $('#push-pm5').checked = settings.pushToPm5;
   const start = $('#start');
-  start.disabled = !state.erg;
-  start.textContent = !state.erg ? 'Connect an erg to start' : canPush && settings.pushToPm5 ? 'Load onto PM5 and start' : 'Start workout';
+  renderMultiMachines();
+  if (state.workout.multi) {
+    const needed = machinesIn(state.workout);
+    const missing = needed.filter((m) => !connFor(m));
+    const canPush = needed.some((m) => connFor(m)?.kind === 'pm5' && connFor(m).device.canProgram);
+    $('#push-row').hidden = !canPush;
+    $('#push-pm5').checked = settings.pushToPm5;
+    start.disabled = missing.length > 0;
+    start.textContent = missing.length ? `Connect ${missing.map(shortName).join(', ')} to start` : canPush && settings.pushToPm5 ? 'Load onto the PM5s and start' : 'Start workout';
+  } else {
+    const canPush = state.erg?.kind === 'pm5' && state.erg.device.canProgram;
+    $('#push-row').hidden = !canPush;
+    $('#push-pm5').checked = settings.pushToPm5;
+    start.disabled = !state.erg;
+    start.textContent = !state.erg ? 'Connect an erg to start' : canPush && settings.pushToPm5 ? 'Load onto PM5 and start' : 'Start workout';
+  }
   renderLivePreview();
 }
 
@@ -128,6 +160,36 @@ function selectWorkout(w) {
   setPushStatus('');
   renderPresets();
   renderPlan();
+  updateConnectionUi();
+}
+
+// For a multi-erg workout: one row per machine it uses, each with its own connect buttons.
+function renderMultiMachines() {
+  const wrap = $('#multi-machines');
+  wrap.hidden = !state.workout.multi;
+  if (!state.workout.multi) return;
+  wrap.replaceChildren(...machinesIn(state.workout).map((machine) => {
+    const conn = connFor(machine);
+    const row = document.createElement('div');
+    row.className = 'multi-machine';
+    row.dataset.connected = String(!!conn);
+    row.innerHTML = '<div><div class="mm-name"></div><div class="mm-status"></div></div><div class="mm-buttons"></div>';
+    row.querySelector('.mm-name').textContent = machineInfo(machine).label;
+    row.querySelector('.mm-status').textContent = !conn ? 'Not connected'
+      : conn.connected === false ? 'Asleep or out of range: reconnecting when it wakes' : `Connected: ${conn.name}`;
+    if (conn?.connected === false) row.dataset.connected = 'waiting';
+    const buttons = row.querySelector('.mm-buttons');
+    for (const [kind, label] of [['pm5', 'PM5'], ['sim', 'Simulate']]) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `btn btn-small${kind === 'sim' ? ' btn-ghost' : ''}`;
+      b.textContent = conn?.kind === kind ? `${label} ✓` : label;
+      b.disabled = kind === 'pm5' && !navigator.bluetooth;
+      b.addEventListener('click', () => connectMulti(machine, kind));
+      buttons.append(b);
+    }
+    return row;
+  }));
 }
 
 // ---------- plan ----------
@@ -217,7 +279,7 @@ function renderMachineSelect() {
 function updateUnitLabels() {
   const m = machineInfo(settings.machine);
   $('#target-label').textContent = `Target pace /${m.paceUnit}m (optional)`;
-  $('#w-pace-label').textContent = `Pace /${m.paceUnit}m`;
+  $('#w-pace-label').textContent = `Split /${m.paceUnit}m`;
   $('#w-cad-label').textContent = m.cadenceUnit === 'rpm' ? 'Cadence' : 'Stroke rate';
 }
 
@@ -230,10 +292,9 @@ function renderHistory() {
   $('#history-card').hidden = items.length === 0;
   $('#history').replaceChildren(...items.slice(0, 10).map((h) => {
     const li = document.createElement('li');
-    const m = machineInfo(h.machine);
     li.innerHTML = '<div><div class="h-name"></div><div class="h-meta"></div></div><div class="h-res"></div>';
     li.querySelector('.h-name').textContent = h.name;
-    li.querySelector('.h-meta').textContent = `${new Date(h.startTime).toLocaleString()} · ${m.label}`;
+    li.querySelector('.h-meta').textContent = `${new Date(h.startTime).toLocaleString()} · ${machineLabel(h.machine)}`;
     li.querySelector('.h-res').textContent = `${formatDistance(h.totalDistance)} · ${formatTime(h.elapsed)}`;
     return li;
   }));
@@ -241,11 +302,21 @@ function renderHistory() {
 
 // ---------- devices ----------
 
-function onErgData(update) {
+function onErgData(update, conn) {
   if (state.hr) delete update.heartRate; // a dedicated strap wins over the erg's own HR
+  const e = state.engine;
+  if (e?.multi) {
+    const active = conn?.machine === e.machineOf(e.segment);
+    if (active) Object.assign(state.live, update);
+    e.ingest({ ...update, source: conn?.machine }, Date.now());
+    if (active) state.stroke?.ingest(update);
+    return;
+  }
+  if (conn && conn !== state.erg) return; // a multi-erg machine, idle between workouts
   Object.assign(state.live, update);
-  state.engine?.ingest(update, Date.now());
-  if (!state.engine) renderLivePreview();
+  e?.ingest(update, Date.now());
+  state.stroke?.ingest(update);
+  if (!e) renderLivePreview();
 }
 
 // The PM5 left its workout: either it finished, or the rower pressed Menu to end it early.
@@ -254,7 +325,8 @@ function onErgData(update) {
 const PM_END_GRACE_MS = 2000;
 function onPmWorkoutEnd() {
   const engine = state.engine;
-  if (!engine) return;
+  // In a multi-erg workout each PM5 finishes its own legs; the app moves on by distance or time.
+  if (!engine || engine.multi) return;
   const endedAt = Date.now();
   setTimeout(() => {
     if (state.engine !== engine || engine.state !== 'running') return;
@@ -269,6 +341,64 @@ function onHrData(update) {
   if (!state.engine) renderLivePreview();
 }
 
+// Connect one erg. Its data is tagged with the connection, so we know which machine it came from.
+async function openErg(kind, machine, onGone) {
+  const conn = { kind, machine };
+  const handlers = {
+    onData: (u) => onErgData(u, conn),
+    onDisconnect: () => { onGone(); updateConnectionUi(); },
+    onWorkoutEnd: onPmWorkoutEnd,
+  };
+  conn.device = kind === 'pm5' ? new PM5Device(handlers)
+    : kind === 'ftms' ? new FtmsDevice(handlers)
+    : new Simulator({ machine, onData: handlers.onData });
+  conn.name = await conn.device.connect();
+  return conn;
+}
+
+// Multi-erg PM5s sit idle for long stretches and may go to sleep. Keep checking in with them,
+// and when one drops, keep reconnecting until it wakes (when someone starts using it).
+function keepConnected(conn) {
+  if (conn.kind !== 'pm5') return;
+  conn.connected = true;
+  conn.device.onConnectionChange = (ok) => {
+    conn.connected = ok;
+    const e = state.engine;
+    if (ok && e?.multi && e.state !== 'finished') {
+      e.resetSource(conn.machine);
+      // Woke up before its leg: load the leg again, unless it's the one in progress.
+      const seg = e.segment;
+      if (!(seg.type === 'work' && seg.machine === conn.machine)) loadNextLeg(e, e.segIndex - 1, conn.machine);
+    }
+    updateConnectionUi();
+  };
+  conn.device.setAutoReconnect(true);
+  conn.device.startKeepAlive();
+}
+
+async function connectMulti(machine, kind) {
+  try {
+    const old = state.ergs[machine];
+    if (old && old !== state.erg) old.device.disconnect();
+    delete state.ergs[machine];
+    if (state.erg?.machine === machine && state.erg.kind !== kind) {
+      if (!Object.values(state.ergs).includes(state.erg)) state.erg.device.disconnect();
+      state.erg = null;
+    }
+    const conn = await openErg(kind, machine, () => { if (state.ergs[machine] === conn) delete state.ergs[machine]; });
+    const guess = conn.device.machineGuess;
+    if (kind === 'pm5' && guess && guess !== machine && !confirm(`That monitor looks like a ${machineInfo(guess).label}. Use it for the ${machineInfo(machine).label}?`)) {
+      conn.device.disconnect();
+    } else {
+      state.ergs[machine] = conn;
+      keepConnected(conn);
+    }
+  } catch (err) {
+    if (err?.name !== 'NotFoundError') alert(`Could not connect: ${err?.message ?? err}`);
+  }
+  updateConnectionUi();
+}
+
 async function connect(kind) {
   try {
     if (kind === 'hr') {
@@ -276,16 +406,12 @@ async function connect(kind) {
       const device = new HeartRateDevice({ onData: onHrData, onDisconnect: () => { state.hr = null; updateConnectionUi(); } });
       state.hr = { kind, device, name: await device.connect() };
     } else {
-      state.erg?.device.disconnect();
+      if (state.erg && !Object.values(state.ergs).includes(state.erg)) state.erg.device.disconnect();
       state.erg = null;
       state.live = {};
-      const handlers = { onData: onErgData, onDisconnect: () => { state.erg = null; updateConnectionUi(); }, onWorkoutEnd: onPmWorkoutEnd };
-      const device = kind === 'pm5' ? new PM5Device(handlers)
-        : kind === 'ftms' ? new FtmsDevice(handlers)
-        : new Simulator({ machine: settings.machine, onData: onErgData });
-      const name = await device.connect();
-      state.erg = { kind, device, name };
-      if (device.machineGuess && device.machineGuess !== settings.machine) setMachine(device.machineGuess);
+      const conn = await openErg(kind, settings.machine, () => { if (state.erg === conn) state.erg = null; });
+      state.erg = conn;
+      if (conn.device.machineGuess && conn.device.machineGuess !== settings.machine) setMachine(conn.device.machineGuess);
     }
   } catch (err) {
     if (err?.name !== 'NotFoundError') alert(`Could not connect: ${err?.message ?? err}`); // NotFoundError = picker cancelled
@@ -297,6 +423,7 @@ function setMachine(machine) {
   settings.machine = machine;
   store.set(SETTINGS_KEY, settings);
   $('#machine').value = machine;
+  if (state.erg) state.erg.machine = machine;
   if (state.erg?.kind === 'sim') state.erg.device.machine = machine;
   updateUnitLabels();
   renderLivePreview();
@@ -332,9 +459,69 @@ async function loadOntoPm5() {
   }
 }
 
+// Multi-erg: load the first leg for each machine onto its PM5 before the start.
+async function loadLegsOntoPm5s(workout) {
+  const start = $('#start');
+  start.disabled = true;
+  try {
+    for (const machine of machinesIn(workout)) {
+      const conn = connFor(machine);
+      if (conn?.kind !== 'pm5' || !conn.device.canProgram) continue;
+      const pm = conn.device;
+      let terminateFirst = false;
+      if (pm.workoutInProgress) {
+        if (!confirm(`The ${machineInfo(machine).label} PM5 has a workout in progress. End it and load this one?`)) return false;
+        terminateFirst = true;
+      }
+      setPushStatus(`Loading the ${machineInfo(machine).label}…`);
+      await pm.programWorkout({ segments: [nextLegOn(workout, machine).segment] }, { terminateFirst, sendTargets: machineInfo(machine).paceUnit === 500 });
+    }
+    setPushStatus('Loaded. Start on the first machine when you are ready.', 'ok');
+    return true;
+  } catch (err) {
+    setPushStatus(`${err?.message ?? err} You can untick "Load this workout onto the PM5" and set up each monitor yourself.`, 'error');
+    return false;
+  } finally {
+    updateConnectionUi();
+  }
+}
+
+// Multi-erg: as soon as a leg finishes, load that machine's next leg so it is ready in time.
+// With `machine` given, load that machine's next leg after `finishedIndex` whatever just finished.
+function loadNextLeg(engine, finishedIndex, machine) {
+  const seg = engine.workout.segments[finishedIndex];
+  const m = machine ?? (seg?.type === 'work' ? seg.machine : null);
+  if (!settings.pushToPm5 || !m) return;
+  const conn = connFor(m);
+  const next = nextLegOn(engine.workout, m, finishedIndex);
+  if (conn?.kind !== 'pm5' || !conn.device.canProgram || conn.connected === false || !next) return;
+  conn.device.programWorkout({ segments: [next.segment] }, { sendTargets: machineInfo(m).paceUnit === 500 })
+    .catch(() => { /* the monitor still streams data; the leg is tracked by the app either way */ });
+}
+
+// Simulated machines: the active one rows, the others rest. After a leg, the next machine
+// starts a few seconds later, as if the athlete walked over.
+const SIM_CHANGEOVER_MS = 6000;
+function driveSimulators(engine) {
+  const seg = engine.segment;
+  for (const conn of allErgs()) {
+    if (conn.kind !== 'sim') continue;
+    const active = !engine.multi || conn.machine === seg.machine;
+    if (seg.type === 'transition') {
+      conn.device.setResting(true);
+      if (active) setTimeout(() => { if (state.engine === engine && engine.segment === seg) conn.device.setResting(false); }, SIM_CHANGEOVER_MS);
+    } else {
+      conn.device.setResting(!active || seg.type === 'rest');
+    }
+  }
+}
+
 async function startWorkout() {
-  if (!state.erg) return;
-  if (state.erg.kind === 'pm5' && state.erg.device.canProgram && settings.pushToPm5) {
+  const multi = !!state.workout.multi;
+  if (multi ? machinesIn(state.workout).some((m) => !connFor(m)) : !state.erg) return;
+  if (multi && settings.pushToPm5) {
+    if (!(await loadLegsOntoPm5s(state.workout))) return;
+  } else if (!multi && state.erg.kind === 'pm5' && state.erg.device.canProgram && settings.pushToPm5) {
     if (!(await loadOntoPm5())) return;
   }
   beep(660, 60); // unlocks audio on iOS-style autoplay policies
@@ -342,14 +529,23 @@ async function startWorkout() {
   state.engine = new WorkoutEngine(state.workout, {
     machine: settings.machine,
     onSegmentChange: (seg, index) => {
-      if (state.erg?.kind === 'sim') state.erg.device.setResting(seg.type === 'rest');
-      if (index > 0) beep(seg.type === 'rest' ? 520 : 990, 350);
+      const e = state.engine;
+      if (!e) return;
+      driveSimulators(e);
+      if (index > 0) beep(seg.type === 'work' ? 990 : 520, 350);
+      if (e.multi && index > 0) {
+        loadNextLeg(e, index - 1);
+        setupStrokePanel(); // new machine: start its stroke panel fresh
+      }
     },
     onFinish: (summary) => setTimeout(() => finishWorkout(summary)),
   });
-  if (state.erg.kind === 'sim') state.erg.device.setResting(false);
-  $('#sim-controls').hidden = state.erg.kind !== 'sim';
+  driveSimulators(state.engine);
+  $('#sim-controls').hidden = !allErgs().some((c) => c.kind === 'sim');
   renderSimEffort();
+  state.rep = null;
+  state.piecesKey = null;
+  setupStrokePanel();
   show('workout');
   state.timer = setInterval(renderWorkout, 200);
   renderWorkout();
@@ -368,26 +564,41 @@ function renderWorkout() {
   e.tick(now);
   if (!state.engine) return; // finished during tick
   const v = e.view(now);
-  const m = machineInfo(e.machine);
-  const isRest = v.seg.type === 'rest';
+  const m = machineInfo(v.machine);
+  const isTransition = v.seg.type === 'transition';
+  const isRest = v.seg.type === 'rest' || isTransition;
+  $('#w-pace-label').textContent = `Split /${m.paceUnit}m`;
+  $('#w-cad-label').textContent = m.cadenceUnit === 'rpm' ? 'Cadence' : 'Stroke rate';
 
-  $('#w-seg-label').textContent = isRest
-    ? 'Rest'
-    : v.works > 1 ? `Piece ${v.workNumber} of ${v.works} · ${segTitle(v.seg)}` : segTitle(v.seg);
-  $('#w-next').textContent = v.next ? `Next: ${v.next.type === 'rest' ? `rest ${formatTime(v.next.value)}` : segTitle(v.next)}` : '';
+  renderMachineStatus(e);
+  if (e.multi) {
+    $('#w-seg-label').textContent = isTransition
+      ? `Change to the ${m.label}`
+      : `Leg ${v.workNumber} of ${v.works} · ${shortName(v.machine)} ${segTitle(v.seg)}`;
+    const nextLeg = e.workout.segments.slice(v.segIndex + 1).find((x) => x.type === 'work');
+    $('#w-next').textContent = isTransition ? '' : nextLeg ? `Next: ${shortName(nextLeg.machine)} ${segTitle(nextLeg)}` : 'Last leg';
+  } else {
+    $('#w-seg-label').textContent = isRest
+      ? 'Rest'
+      : v.works > 1 ? `Piece ${v.workNumber} of ${v.works} · ${segTitle(v.seg)}` : segTitle(v.seg);
+    $('#w-next').textContent = v.next ? `Next: ${v.next.type === 'rest' ? `rest ${formatTime(v.next.value)}` : segTitle(v.next)}` : '';
+  }
 
   const hero = $('#w-hero');
   const caption = $('#w-hero-caption');
   $('#w-hero-wrap').dataset.type = v.seg.type;
   if (v.state === 'armed') {
     hero.textContent = v.seg.kind === 'distance' ? v.seg.value.toLocaleString('en-US') : v.seg.kind === 'time' ? formatTime(v.seg.value) : '0:00';
-    caption.textContent = 'Start moving to begin, or tap Start now';
+    caption.textContent = e.multi ? `Start moving on the ${m.label} to begin` : 'Start moving to begin, or tap Start now';
+  } else if (isTransition) {
+    hero.textContent = formatTime(v.segElapsed);
+    caption.textContent = `changeover · the clock is running · the next leg starts when you move`;
   } else if (v.seg.kind === 'distance') {
     hero.textContent = Math.ceil(v.remaining).toLocaleString('en-US');
-    caption.textContent = `metres to go · ${formatTime(v.segElapsed)} elapsed${v.projected ? ` · projected ${formatTime(v.projected, true)}` : ''}`;
+    caption.textContent = `metres to go · ${formatTime(v.segElapsed)} elapsed`;
   } else if (v.seg.kind === 'time') {
     hero.textContent = formatTime(Math.ceil(v.remaining));
-    caption.textContent = isRest ? 'rest remaining' : `remaining · ${formatDistance(v.segDistance)} · projected ${formatDistance(v.projected)}`;
+    caption.textContent = isRest ? 'rest remaining' : `remaining · ${formatDistance(v.segDistance)}`;
   } else {
     hero.textContent = formatTime(v.segElapsed);
     caption.textContent = formatDistance(v.segDistance);
@@ -403,27 +614,196 @@ function renderWorkout() {
     }
   }
 
-  const target = $('#w-target');
-  target.hidden = v.targetDelta == null || isRest;
-  if (v.targetDelta != null) {
-    const ahead = v.targetDelta <= 0;
-    target.dataset.state = ahead ? 'ahead' : 'behind';
-    target.textContent = `Target ${formatPace(v.seg.targetPace)} · ${Math.abs(v.targetDelta).toFixed(1)}s ${ahead ? 'ahead' : 'behind'} per ${m.paceUnit}m`;
-  }
+  renderPacePanel(v, m, isRest);
+  const avg = trackRepAverages(v, isRest);
+  const targetWatts = !isRest && v.seg.targetPace ? Math.round(m.watts(m.paceUnit / v.seg.targetPace)) : null;
 
-  $('#w-pace').textContent = formatPace(v.pace);
-  $('#w-seg-pace').textContent = formatPace(v.segPace);
   $('#w-cadence').textContent = v.cadence ? Math.round(v.cadence) : '--';
   $('#w-power').textContent = v.power ? Math.round(v.power) : '--';
   $('#w-hr').textContent = v.heartRate ?? '--';
-  $('#w-cal').textContent = Math.round(v.calories);
+  $('#w-cadence-sub').textContent = avg.cadence ? `avg ${Math.round(avg.cadence)}` : '';
+  $('#w-power-sub').textContent = targetWatts ? `target ${targetWatts}` : avg.power ? `avg ${Math.round(avg.power)}` : '';
+  $('#w-hr-sub').textContent = avg.heartRate ? `avg ${Math.round(avg.heartRate)}` : '';
+
+  $('#w-seg-pace').textContent = formatPace(v.segPace);
+  const proj = !isRest && v.state === 'running' && v.projected ? v.projected : null;
+  $('#w-proj-label').textContent = v.seg.kind === 'time' ? 'Projected' : 'Finish';
+  $('#w-proj').textContent = proj == null || v.seg.kind === 'open' ? '--'
+    : v.seg.kind === 'distance' ? formatTime(proj, true) : formatDistance(proj);
   $('#w-dist').textContent = formatDistance(v.totalDistance);
   $('#w-time').textContent = formatTime(v.totalElapsed);
+  renderStrokePanel();
+  renderPieces(e, v, m);
   $('#start-now').hidden = v.state !== 'armed';
 }
 
+// How far the live split can be from the target before the band marker pins to the edge (s).
+const BAND_RANGE = 3;
+const BAND_ON_TARGET = 1.5;
+
+function renderPacePanel(v, m, isRest) {
+  const panel = $('#w-pace-panel');
+  $('#w-pace').textContent = formatPace(v.pace);
+  const target = isRest ? null : v.seg.targetPace;
+  const band = $('#w-band');
+  if (!target) {
+    $('#w-target-label').textContent = 'Rep average';
+    $('#w-target-value').textContent = formatPace(v.segPace);
+    $('#w-target-delta').textContent = '';
+    band.hidden = true;
+    delete panel.dataset.state;
+    return;
+  }
+  $('#w-target-label').textContent = 'Target';
+  $('#w-target-value').textContent = formatPace(target);
+  band.hidden = false;
+  if (v.pace == null) {
+    $('#w-target-delta').textContent = '';
+    $('#w-band-marker').style.left = '50%';
+    delete panel.dataset.state;
+    return;
+  }
+  const delta = v.pace - target; // positive = slower than target
+  const shown = Math.abs(delta) < 0.05 ? 'on target' : `${Math.abs(delta).toFixed(1)}s ${delta < 0 ? 'faster' : 'slower'}`;
+  $('#w-target-delta').textContent = shown;
+  panel.dataset.state = Math.abs(delta) <= BAND_ON_TARGET ? 'on' : delta < 0 ? 'fast' : 'slow';
+  const pos = 50 + Math.max(-1, Math.min(1, delta / BAND_RANGE)) * 50;
+  $('#w-band-marker').style.left = `${pos}%`;
+}
+
+// Average stroke rate, watts and heart rate over the current piece, sampled as the screen updates.
+function trackRepAverages(v, isRest) {
+  if (!state.rep || state.rep.segIndex !== v.segIndex) state.rep = { segIndex: v.segIndex, sums: {}, counts: {} };
+  const r = state.rep;
+  if (!isRest && v.state === 'running') {
+    for (const key of ['cadence', 'power', 'heartRate']) {
+      if (v[key] > 0) { r.sums[key] = (r.sums[key] ?? 0) + v[key]; r.counts[key] = (r.counts[key] ?? 0) + 1; }
+    }
+  }
+  return Object.fromEntries(['cadence', 'power', 'heartRate'].map((k) => [k, r.counts[k] ? r.sums[k] / r.counts[k] : null]));
+}
+
+// Completed work pieces, for interval workouts. Shown in the side column on big screens.
+function renderPieces(e, v, m) {
+  const panel = $('#w-pieces');
+  const show = v.works > 1;
+  panel.dataset.show = String(show);
+  $('#view-workout').dataset.side = show || !$('#w-stroke').hidden ? 'full' : 'empty';
+  if (!show) return;
+  const done = e.laps.filter((l) => l.type === 'work');
+  const key = `${done.length}:${v.segIndex}`;
+  if (state.piecesKey === key) return;
+  state.piecesKey = key;
+  $('#w-pieces-pace').textContent = e.multi ? 'Split' : `/${m.paceUnit}m`;
+  const rows = done.map((l, i) => {
+    const delta = l.targetPace && l.pace ? l.pace - l.targetPace : null;
+    const cls = delta == null ? '' : delta <= 0 ? 'ahead' : 'behind';
+    const vs = delta == null ? '' : `${delta <= 0 ? '−' : '+'}${Math.abs(delta).toFixed(1)}s`;
+    const label = e.multi ? `${i + 1} ${shortName(l.machine)}` : i + 1;
+    const pace = e.multi && machineInfo(l.machine).paceUnit !== 500 ? `${formatPace(l.pace)} /1k` : formatPace(l.pace);
+    return `<tr><td>${label}</td><td>${pace}</td><td>${l.avgCadence || '--'}</td><td>${l.avgPower || '--'}</td><td>${l.avgHr ?? '--'}</td><td class="${cls}">${vs}</td></tr>`;
+  });
+  if (v.seg.type === 'work' && done.length < v.works) rows.push(`<tr class="current"><td>${done.length + 1}</td><td colspan="5">in progress</td></tr>`);
+  $('#w-pieces-body').innerHTML = rows.join('');
+}
+
+// ---------- stroke panel: force curve and stroke numbers ----------
+
+function setupStrokePanel() {
+  const e = state.engine;
+  const machine = e?.multi ? e.machineOf(e.segment) : settings.machine;
+  const kind = e?.multi ? connFor(machine)?.kind : state.erg?.kind;
+  const hasStrokes = (kind === 'pm5' || kind === 'sim') && machineInfo(machine).paceUnit === 500;
+  state.stroke = hasStrokes ? new StrokeTracker() : null;
+  $('#w-stroke').hidden = !hasStrokes;
+  if (!hasStrokes) return;
+  if (settings.strokeView !== 'off') settings.strokeView = 'curve'; // older saved choices
+  $('#stroke-view').value = settings.strokeView;
+  $('#w-stroke-body').dataset.view = settings.strokeView;
+  drawForceCurve($('#w-curve'), []);
+  for (const id of ['#w-length', '#w-peak', '#w-ratio']) $(id).textContent = '--';
+  $('#w-hint').hidden = true;
+  state.strokeDrawn = -1;
+}
+
+// Redrawn from the screen update loop, only when a new stroke has arrived.
+function renderStrokePanel() {
+  const tracker = state.stroke;
+  if (!tracker || tracker.version === state.strokeDrawn) return;
+  state.strokeDrawn = tracker.version;
+  renderStrokeNumbers(tracker);
+}
+
+function renderStrokeNumbers(tracker) {
+  const s = tracker.stroke;
+  if (s) {
+    $('#w-length').textContent = s.driveLength ? `${s.driveLength.toFixed(2)} m` : '--';
+    $('#w-peak').textContent = s.peakForce ? `${Math.round(s.peakForce)} lb` : '--';
+    $('#w-ratio').textContent = tracker.ratio ? `1 : ${tracker.ratio.toFixed(1)}` : '--';
+  }
+  drawForceCurve($('#w-curve'), tracker.curves);
+  const hint = tracker.hint;
+  $('#w-hint').hidden = !hint;
+  $('#w-hint').textContent = hint?.text ?? '';
+}
+
+// Force through the drive for the latest stroke, with the few before it drawn faint behind.
+function drawForceCurve(svg, curves) {
+  const W = 300;
+  const H = 150;
+  const left = 34;
+  const right = 292;
+  const top = 24;
+  const bottom = 132;
+  if (!curves.length) {
+    svg.innerHTML = `<text class="curve-empty" x="${W / 2}" y="${H / 2}" text-anchor="middle">Force curve appears after your first stroke</text>`;
+    return;
+  }
+  const peak = Math.max(...curves.flat());
+  const step = peak > 300 ? 100 : 50;
+  const yMax = Math.max(step, Math.ceil(peak / step) * step);
+  const x = (i, n) => left + (i / (n - 1)) * (right - left);
+  const y = (f) => bottom - (f / yMax) * (bottom - top);
+  const line = (c) => c.map((f, i) => `${x(i, c.length).toFixed(1)},${y(f).toFixed(1)}`).join(' ');
+
+  let out = '';
+  for (let g = 0; g <= yMax; g += step) {
+    out += `<line class="curve-grid" x1="${left}" x2="${right}" y1="${y(g)}" y2="${y(g)}"/>`;
+    out += `<text class="curve-axis" x="${left - 6}" y="${y(g) + 3}" text-anchor="end">${g}</text>`;
+  }
+  out += `<text class="curve-axis" x="${left}" y="${H - 2}">catch</text><text class="curve-axis" x="${right}" y="${H - 2}" text-anchor="end">finish</text>`;
+  out += `<text class="curve-axis" x="${left - 6}" y="10" text-anchor="end">lb</text>`;
+  const older = curves.slice(0, -1);
+  older.forEach((c, i) => {
+    out += `<polyline class="curve-old" style="opacity:${(0.15 + (0.3 * (i + 1)) / older.length).toFixed(2)}" points="${line(c)}"/>`;
+  });
+  const latest = curves.at(-1);
+  out += `<polyline class="curve-new" points="${line(latest)}"/>`;
+  const pi = latest.indexOf(Math.max(...latest));
+  const px = x(pi, latest.length);
+  const py = y(latest[pi]);
+  out += `<circle class="curve-peak" r="4.5" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}"/>`;
+  out += `<text class="curve-axis" x="${px.toFixed(1)}" y="${(py - 8).toFixed(1)}" text-anchor="middle">${Math.round(latest[pi])}</text>`;
+  svg.innerHTML = out;
+}
+
+// Multi-erg: one chip per machine, so a monitor that fell asleep is spotted before the changeover.
+function renderMachineStatus(e) {
+  const el = $('#w-machines');
+  el.hidden = !e.multi;
+  if (!e.multi) return;
+  const active = e.machineOf(e.segment);
+  const html = machinesIn(e.workout).map((m) => {
+    const conn = connFor(m);
+    const st = !conn ? 'off' : conn.connected === false ? 'waiting' : 'on';
+    const note = st === 'waiting' ? ' · reconnecting' : st === 'off' ? ' · not connected' : '';
+    return `<span class="chip" data-on="${st === 'on'}" data-state="${st}"${m === active ? ' aria-current="true"' : ''}>${shortName(m)}${note}</span>`;
+  }).join('');
+  if (el.innerHTML !== html) el.innerHTML = html;
+}
+
 function renderSimEffort() {
-  const sim = state.erg?.kind === 'sim' ? state.erg.device : null;
+  const sim = allErgs().find((c) => c.kind === 'sim')?.device;
   if (sim) $('#sim-effort').textContent = `${Math.round(sim.effort * 100)}%`;
 }
 
@@ -431,6 +811,7 @@ function stopWorkoutLoop() {
   clearInterval(state.timer);
   state.timer = null;
   state.engine = null;
+  state.stroke = null;
   state.wakeLock?.release?.().catch(() => {});
   state.wakeLock = null;
 }
@@ -451,22 +832,25 @@ function finishWorkout(summary) {
   renderSummary(summary);
   renderHistory();
   show('summary');
-  if (logbook.connected && logbook.config.autoSync && LOGBOOK_TYPES[summary.machine]) sendToLogbook();
+  if (logbook.connected && logbook.config.autoSync && canLog(summary)) sendToLogbook();
 }
 
 function renderSummary(s) {
   const m = machineInfo(s.machine);
-  $('#lb-send').hidden = !logbook.connected || !LOGBOOK_TYPES[s.machine];
+  $('#lb-send').hidden = !logbook.connected || !canLog(s);
   $('#lb-send').disabled = false;
   setSendStatus('');
   $('#s-title').textContent = s.name;
-  $('#s-date').textContent = `${new Date(s.startTime).toLocaleString()} · ${m.label}`;
+  $('#s-date').textContent = `${new Date(s.startTime).toLocaleString()} · ${machineLabel(s.machine)}`;
+  const changeovers = s.laps.filter((l) => l.type === 'transition');
   const stats = [
     ['Distance', formatDistance(s.totalDistance)],
     ['Time', formatTime(s.elapsed, true)],
-    [`Work pace /${m.paceUnit}m`, formatPace(s.workPace)],
+    s.multi
+      ? ['Changeovers', changeovers.length ? formatTime(changeovers.reduce((a, l) => a + l.duration, 0), true) : '--']
+      : [`Work pace /${m.paceUnit}m`, formatPace(s.workPace)],
     ['Avg watts', s.avgPower || '--'],
-    [`Avg ${m.cadenceUnit}`, s.avgCadence || '--'],
+    ...(s.multi ? [] : [[`Avg ${m.cadenceUnit}`, s.avgCadence || '--']]),
     ['Avg / max HR', s.avgHr ? `${s.avgHr} / ${s.maxHr}` : '--'],
     ['Calories', s.calories],
   ];
@@ -478,19 +862,21 @@ function renderSummary(s) {
     d.querySelector('strong').textContent = value;
     return d;
   }));
-  $('#s-pace-head').textContent = `/${m.paceUnit}m`;
-  $('#s-cad-head').textContent = m.cadenceUnit.toUpperCase();
+  $('#s-pace-head').textContent = s.multi ? 'Split' : `/${m.paceUnit}m`;
+  $('#s-cad-head').textContent = s.multi ? 'Rate' : m.cadenceUnit.toUpperCase();
   let n = 0;
   $('#s-laps').replaceChildren(...s.laps.map((l) => {
     const tr = document.createElement('tr');
-    if (l.type === 'rest') tr.className = 'rest';
+    const off = l.type !== 'work';
+    if (off) tr.className = 'rest';
+    const unitNote = s.multi && machineInfo(l.machine).paceUnit !== 500 ? ' /1k' : '';
     const cells = [
-      l.type === 'rest' ? 'rest' : String(++n),
+      l.type === 'rest' ? 'rest' : l.type === 'transition' ? 'change' : s.multi ? `${++n} ${shortName(l.machine)}` : String(++n),
       formatTime(l.duration, true),
       Math.round(l.distance).toLocaleString('en-US'),
-      l.type === 'rest' ? '--' : formatPace(l.pace),
+      off ? '--' : formatPace(l.pace) + unitNote,
       l.avgPower || '--',
-      l.type === 'rest' ? '--' : l.avgCadence || '--',
+      off ? '--' : l.avgCadence || '--',
       l.avgHr ?? '--',
     ];
     for (const c of cells) {
@@ -549,6 +935,9 @@ function setSendStatus(text, kind = '') {
   el.dataset.state = kind;
 }
 
+// Concept2 machines only. A multi-erg workout goes up as one result per machine.
+const canLog = (s) => (s.multi ? splitByMachine(s).some((p) => LOGBOOK_TYPES[p.machine]) : !!LOGBOOK_TYPES[s.machine]);
+
 async function sendToLogbook() {
   const s = state.summary;
   if (!s) return;
@@ -557,12 +946,84 @@ async function sendToLogbook() {
   btn.disabled = true;
   setSendStatus('Sending to the Concept2 Logbook…');
   try {
+    if (s.multi) {
+      const parts = splitByMachine(s).filter((p) => LOGBOOK_TYPES[p.machine]);
+      const saved = [];
+      for (const p of parts) {
+        const r = await logbook.upload(buildLogbookResult(p.summary, p.workout, { weightClass: logbook.config.weightClass }));
+        saved.push(`${machineInfo(p.machine).label}${r.duplicate ? ' (already there)' : ''}`);
+        setSendStatus(`Saved ${saved.join(', ')}…`);
+      }
+      setSendStatus(`Saved to your Concept2 Logbook: ${saved.join(', ')}.`, 'ok');
+      return;
+    }
     const result = buildLogbookResult(s, state.summaryWorkout, { weightClass: logbook.config.weightClass });
     const r = await logbook.upload(result);
     setSendStatus(r.duplicate ? 'Already in your Logbook.' : 'Saved to your Concept2 Logbook.', 'ok');
   } catch (err) {
     setSendStatus(`Not saved: ${err.message}`, 'error');
     btn.disabled = false;
+  }
+}
+
+// ---------- multi-erg form ----------
+
+const MULTI_DEFAULTS = {
+  distance: { circuit: '500', legs: ['2000', '4000', '2000'] },
+  time: { circuit: '4:00', legs: ['10:00', '10:00', '10:00'] },
+};
+
+function setupMultiForm() {
+  const form = $('#multi-form');
+  const order = ['rower', 'bikeerg', 'ski'];
+  ['m1', 'm2', 'm3'].forEach((name, i) => {
+    const sel = form[name];
+    sel.replaceChildren(...MULTI_MACHINES.map((m) => new Option(machineInfo(m).label, m, false, m === order[i])), new Option('None', ''));
+  });
+  const sync = () => {
+    const format = form.format.value;
+    form.dataset.format = format;
+    $('#multi-format-hint').textContent = format === 'circuit'
+      ? 'The same leg on each machine in turn, round after round.'
+      : 'One leg on each machine, back to back.';
+    const time = form.kind.value === 'time';
+    for (const el of form.querySelectorAll('.multi-value-label')) {
+      el.textContent = el.closest('[data-for="circuit"]') ? (time ? 'Each leg (m:ss)' : 'Each leg (m)') : time ? 'Time (m:ss)' : 'Distance (m)';
+    }
+  };
+  for (const r of form.querySelectorAll('[name="format"]')) r.addEventListener('change', sync);
+  form.kind.addEventListener('change', () => {
+    const d = MULTI_DEFAULTS[form.kind.value];
+    form.value.value = d.circuit;
+    ['v1', 'v2', 'v3'].forEach((n, i) => { form[n].value = d.legs[i]; });
+    sync();
+  });
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const { workout, error } = readMultiForm(form);
+    $('#multi-error').textContent = error ?? '';
+    if (workout) selectWorkout(workout);
+  });
+  sync();
+}
+
+function readMultiForm(form) {
+  const kind = form.kind.value;
+  const parse = (text) => (kind === 'time' ? parseDuration(text) : Number(String(text).trim()));
+  const slots = [['m1', 'v1'], ['m2', 'v2'], ['m3', 'v3']].map(([m, v]) => ({ machine: form[m].value, value: parse(form[v].value) })).filter((x) => x.machine);
+  const unitHelp = kind === 'time' ? 'as m:ss, e.g. 4:00' : 'in metres, e.g. 500';
+  try {
+    if (form.format.value === 'circuit') {
+      const rounds = Number(form.rounds.value);
+      const value = parse(form.value.value);
+      if (!Number.isInteger(rounds) || rounds < 1) return { error: 'Rounds must be a whole number of at least 1.' };
+      if (!Number.isFinite(value) || value <= 0) return { error: `Enter each leg ${unitHelp}.` };
+      return { workout: buildCircuit({ machines: slots.map((x) => x.machine), rounds, kind, value, matchBike: form.matchBike.checked }) };
+    }
+    if (slots.some((x) => !Number.isFinite(x.value) || x.value <= 0)) return { error: `Enter each machine's leg ${unitHelp}.` };
+    return { workout: buildErgathlon(slots.map((x) => ({ ...x, kind }))) };
+  } catch (err) {
+    return { error: err.message };
   }
 }
 
@@ -618,8 +1079,14 @@ function init() {
 
   for (const btn of document.querySelectorAll('[data-connect]')) btn.addEventListener('click', () => connect(btn.dataset.connect));
   $('#machine').addEventListener('change', (e) => setMachine(e.target.value));
+  $('#stroke-view').addEventListener('change', (e) => {
+    settings.strokeView = e.target.value;
+    store.set(SETTINGS_KEY, settings);
+    $('#w-stroke-body').dataset.view = settings.strokeView;
+  });
   $('#fit-device').addEventListener('change', (e) => { settings.fitDevice = e.target.value; store.set(SETTINGS_KEY, settings); });
 
+  setupMultiForm();
   const form = $('#custom-form');
   form.kind.addEventListener('change', () => {
     const time = form.kind.value === 'time';
@@ -642,8 +1109,9 @@ function init() {
     const summary = e.end(Date.now());
     if (!summary) finishWorkout(null); // never started; onFinish handles the rest
   });
-  $('#sim-slower').addEventListener('click', () => { state.erg?.device.adjustEffort?.(-0.05); renderSimEffort(); });
-  $('#sim-faster').addEventListener('click', () => { state.erg?.device.adjustEffort?.(0.05); renderSimEffort(); });
+  const adjustSims = (d) => { for (const c of allErgs()) c.device.adjustEffort?.(d); renderSimEffort(); };
+  $('#sim-slower').addEventListener('click', () => adjustSims(-0.05));
+  $('#sim-faster').addEventListener('click', () => adjustSims(0.05));
 
   $('#dl-fit').addEventListener('click', () => {
     const s = state.summary;
